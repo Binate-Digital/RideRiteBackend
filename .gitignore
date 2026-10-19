@@ -29,3 +29,6 @@ coverage/
 
 # Optional local dumps
 *.local.json
+
+# Postman (local only — not tracked)
+postman/
