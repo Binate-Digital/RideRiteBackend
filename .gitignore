@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Secrets / local env (keep .env.example)
+.env
+.env.*
+!.env.example
+
+# Logs & runtime
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build / coverage
+dist/
+build/
+coverage/
+.nyc_output/
+
+# Optional local dumps
+*.local.json

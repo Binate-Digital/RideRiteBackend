@@ -1,0 +1,352 @@
+{
+  "info": {
+    "_postman_id": "riderite-auth-collection-001",
+    "name": "RideRite Auth API",
+    "description": "Complete auth flow for RideRite backend.\n\n**How to use**\n1. Import this collection + `RideRite_Auth.postman_environment.json`\n2. Select environment **RideRite Auth — Local**\n3. Change `email` / `password` variables to test new accounts\n4. Run folder **01 — Happy path** in order (Collection Runner works)\n\nIn development, signup / resend / forgot-password return tokens under `dev.*` and tests auto-save them into environment variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "email", "value": "rider.test1@example.com" },
+    { "key": "password", "value": "Password123!" },
+    { "key": "newPassword", "value": "Password456!" },
+    { "key": "fullName", "value": "Test Rider" },
+    { "key": "phone", "value": "+1 (555) 010-2001" },
+    { "key": "role", "value": "rider" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "emailVerificationToken", "value": "" },
+    { "key": "passwordResetToken", "value": "" },
+    { "key": "userId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "00 — Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 — Happy path (signup → verify → me)",
+      "item": [
+        {
+          "name": "1. Signup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Created', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "if (j.user?.id) pm.environment.set('userId', j.user.id);",
+                  "if (j.dev?.emailVerificationToken) {",
+                  "  pm.environment.set('emailVerificationToken', j.dev.emailVerificationToken);",
+                  "  pm.collectionVariables.set('emailVerificationToken', j.dev.emailVerificationToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"{{fullName}}\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"phone\": \"{{phone}}\",\n  \"role\": \"{{role}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/signup",
+            "description": "Creates account. Change `email` env var for each new test user."
+          }
+        },
+        {
+          "name": "2. Login before verify (expect 403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Blocked until verified', () => pm.response.to.have.status(403));",
+                  "const j = pm.response.json();",
+                  "pm.test('EMAIL_NOT_VERIFIED', () => pm.expect(j.code).to.eql('EMAIL_NOT_VERIFIED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "3. Verify email",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Verified', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "if (j.accessToken) {",
+                  "  pm.environment.set('accessToken', j.accessToken);",
+                  "  pm.collectionVariables.set('accessToken', j.accessToken);",
+                  "}",
+                  "if (j.refreshToken) {",
+                  "  pm.environment.set('refreshToken', j.refreshToken);",
+                  "  pm.collectionVariables.set('refreshToken', j.refreshToken);",
+                  "}",
+                  "if (j.user?.id) pm.environment.set('userId', j.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{emailVerificationToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/verify-email"
+          }
+        },
+        {
+          "name": "4. Get me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('OK', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('email verified', () => pm.expect(j.user.isEmailVerified).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/auth/me"
+          }
+        },
+        {
+          "name": "5. Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Logged in', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "if (j.accessToken) pm.environment.set('accessToken', j.accessToken);",
+                  "if (j.refreshToken) pm.environment.set('refreshToken', j.refreshToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 — Session",
+      "item": [
+        {
+          "name": "Refresh tokens",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Refreshed', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "if (j.accessToken) pm.environment.set('accessToken', j.accessToken);",
+                  "if (j.refreshToken) pm.environment.set('refreshToken', j.refreshToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/refresh"
+          }
+        },
+        {
+          "name": "Update profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"{{fullName}} Updated\",\n  \"phone\": \"{{phone}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/me"
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/logout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 — Password reset",
+      "item": [
+        {
+          "name": "1. Forgot password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Accepted', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "if (j.dev?.passwordResetToken) {",
+                  "  pm.environment.set('passwordResetToken', j.dev.passwordResetToken);",
+                  "  pm.collectionVariables.set('passwordResetToken', j.dev.passwordResetToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/forgot-password"
+          }
+        },
+        {
+          "name": "2. Reset password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{passwordResetToken}}\",\n  \"password\": \"{{newPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/reset-password",
+            "description": "After success, update env `password` to match `newPassword` (or login with newPassword)."
+          }
+        },
+        {
+          "name": "3. Login with new password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Logged in', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "if (j.accessToken) pm.environment.set('accessToken', j.accessToken);",
+                  "if (j.refreshToken) pm.environment.set('refreshToken', j.refreshToken);",
+                  "pm.environment.set('password', pm.environment.get('newPassword'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{newPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "4. Change password (authenticated)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"{{password}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/change-password",
+            "description": "Uses current `password` env. After reset flow, password may already equal newPassword — adjust vars if needed."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 — Resend verification",
+      "item": [
+        {
+          "name": "Resend verification email",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const j = pm.response.json();",
+                  "if (j.dev?.emailVerificationToken) {",
+                  "  pm.environment.set('emailVerificationToken', j.dev.emailVerificationToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/resend-verification",
+            "description": "Useful when testing a fresh unverified signup. Change email var first."
+          }
+        }
+      ]
+    }
+  ]
+}

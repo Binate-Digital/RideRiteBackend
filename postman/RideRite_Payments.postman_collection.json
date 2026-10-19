@@ -1,0 +1,159 @@
+{
+  "info": {
+    "_postman_id": "riderite-payments-collection-001",
+    "name": "RideRite Payments API",
+    "description": "Phase 3 — ride payment intents, mock confirm, saved cards.\n\n**Default mode: mock** (no Stripe key needed).\n\nFlow:\n1. Auth as rider → set `riderAccessToken`\n2. Book a ride with `paymentMethod: \"card\"` (Rides collection) → `tripId`\n3. Create intent → confirm-mock → trip.paid = true\n4. Optional: mock-attach saved card, list methods\n\nWhen you have Stripe test keys: set them in backend `.env`, `STRIPE_MOCK=false`, restart server, then use Stripe.js / Payment Element with returned `clientSecret`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "riderAccessToken", "value": "" },
+    { "key": "tripId", "value": "" },
+    { "key": "paymentMethodId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "00 — Config",
+      "item": [
+        {
+          "name": "Payments config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/payments/config"
+          }
+        },
+        {
+          "name": "Health (shows paymentsMode)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 — Ride pay (mock)",
+      "item": [
+        {
+          "name": "1. Create payment intent for trip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Intent created', () => pm.expect([200,201]).to.include(pm.response.code));",
+                  "const j = pm.response.json();",
+                  "if (j.paymentIntentId) pm.environment.set('paymentIntentId', j.paymentIntentId);",
+                  "if (j.clientSecret) pm.environment.set('clientSecret', j.clientSecret);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/rides/{{tripId}}/intent",
+            "description": "Trip must use paymentMethod card/cashapp/paypal (not cash/venmo/zelle)."
+          }
+        },
+        {
+          "name": "2. Confirm mock payment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Paid', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('trip.paid', () => pm.expect(j.trip.paid).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/rides/{{tripId}}/confirm-mock"
+          }
+        },
+        {
+          "name": "3. Sync payment (Stripe mode)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/rides/{{tripId}}/sync",
+            "description": "After Stripe.js confirms PI on client, call this (or rely on webhook)."
+          }
+        },
+        {
+          "name": "4. My payments history",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/mine"
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 — Saved cards",
+      "item": [
+        {
+          "name": "Create setup intent",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/methods/setup"
+          }
+        },
+        {
+          "name": "Mock attach card",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const j = pm.response.json();",
+                  "if (j.paymentMethod?.id) {",
+                  "  pm.environment.set('paymentMethodId', j.paymentMethod.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/methods/mock-attach"
+          }
+        },
+        {
+          "name": "List payment methods",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/methods"
+          }
+        },
+        {
+          "name": "Set default payment method",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/methods/{{paymentMethodId}}/default"
+          }
+        },
+        {
+          "name": "Detach payment method",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/payments/methods/{{paymentMethodId}}"
+          }
+        }
+      ]
+    }
+  ]
+}

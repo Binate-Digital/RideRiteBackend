@@ -1,0 +1,308 @@
+{
+  "info": {
+    "_postman_id": "riderite-rides-collection-001",
+    "name": "RideRite Rides + Driver API",
+    "description": "Phase 2 — ride booking + driver accept/status flow.\n\n**Prereq:** Auth collection environment (same env works).\n\n**Suggested run order**\n1. Create & verify a **rider** (Auth collection)\n2. Create & verify a **driver** (change email + role=driver, then Auth happy path)\n3. Run this collection folders in order with both tokens saved.\n\nTip: keep `riderAccessToken` and `driverAccessToken` separate in the environment.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "riderAccessToken", "value": "" },
+    { "key": "driverAccessToken", "value": "" },
+    { "key": "tripId", "value": "" },
+    { "key": "pickup", "value": "Orlando International Airport, Orlando, FL" },
+    { "key": "destination", "value": "Disney Springs, Lake Buena Vista, FL" },
+    { "key": "vehicle", "value": "sedan" },
+    { "key": "paymentMethod", "value": "cash" }
+  ],
+  "item": [
+    {
+      "name": "00 — Copy tokens from Auth",
+      "item": [
+        {
+          "name": "Use current accessToken as rider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const t = pm.environment.get('accessToken');",
+                  "if (t) pm.environment.set('riderAccessToken', t);",
+                  "pm.test('riderAccessToken set', () => pm.expect(pm.environment.get('riderAccessToken')).to.be.ok);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{baseUrl}}/api/auth/me",
+            "description": "After logging in as rider, run this to copy accessToken → riderAccessToken."
+          }
+        },
+        {
+          "name": "Use current accessToken as driver",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const t = pm.environment.get('accessToken');",
+                  "if (t) pm.environment.set('driverAccessToken', t);",
+                  "pm.test('driverAccessToken set', () => pm.expect(pm.environment.get('driverAccessToken')).to.be.ok);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{baseUrl}}/api/auth/me",
+            "description": "After logging in as driver, run this to copy accessToken → driverAccessToken."
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 — Driver setup",
+      "item": [
+        {
+          "name": "Ensure driver role + profile",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAccessToken}}" }],
+            "url": "{{baseUrl}}/api/driver/ensure"
+          }
+        },
+        {
+          "name": "Update vehicle",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{driverAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vehicleType\": \"{{vehicle}}\",\n  \"vehicleMake\": \"Toyota\",\n  \"vehicleModel\": \"Camry\",\n  \"vehicleColor\": \"Black\",\n  \"vehiclePlate\": \"RR-TEST-1\"\n}"
+            },
+            "url": "{{baseUrl}}/api/driver/vehicle"
+          }
+        },
+        {
+          "name": "Go online",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAccessToken}}" }],
+            "url": "{{baseUrl}}/api/driver/online"
+          }
+        },
+        {
+          "name": "Update location (Orlando)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{driverAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": 28.5383,\n  \"lng\": -81.3792\n}"
+            },
+            "url": "{{baseUrl}}/api/driver/location"
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 — Rider book flow",
+      "item": [
+        {
+          "name": "1. Fare estimate",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{riderAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": \"{{pickup}}\",\n  \"destination\": \"{{destination}}\",\n  \"vehicle\": \"{{vehicle}}\",\n  \"pickupCoords\": { \"lat\": 28.4312, \"lng\": -81.3081 },\n  \"destinationCoords\": { \"lat\": 28.3722, \"lng\": -81.5158 }\n}"
+            },
+            "url": "{{baseUrl}}/api/rides/estimate"
+          }
+        },
+        {
+          "name": "2. Book ride",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Created', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "if (j.trip?.id) {",
+                  "  pm.environment.set('tripId', j.trip.id);",
+                  "  pm.collectionVariables.set('tripId', j.trip.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{riderAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": \"{{pickup}}\",\n  \"destination\": \"{{destination}}\",\n  \"vehicle\": \"{{vehicle}}\",\n  \"paymentMethod\": \"{{paymentMethod}}\",\n  \"pickupCoords\": { \"lat\": 28.4312, \"lng\": -81.3081 },\n  \"destinationCoords\": { \"lat\": 28.3722, \"lng\": -81.5158 }\n}"
+            },
+            "url": "{{baseUrl}}/api/rides"
+          }
+        },
+        {
+          "name": "3. List my rides (rider)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/rides"
+          }
+        },
+        {
+          "name": "4. Get trip by id",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{riderAccessToken}}" }],
+            "url": "{{baseUrl}}/api/rides/{{tripId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 — Driver trip lifecycle",
+      "item": [
+        {
+          "name": "1. List open requests",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAccessToken}}" }],
+            "url": "{{baseUrl}}/api/rides/open"
+          }
+        },
+        {
+          "name": "2. Accept trip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Accepted', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('status accepted', () => pm.expect(j.trip.status).to.eql('accepted'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAccessToken}}" }],
+            "url": "{{baseUrl}}/api/rides/{{tripId}}/accept"
+          }
+        },
+        {
+          "name": "3. Status → en_route",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{driverAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"en_route\"\n}" },
+            "url": "{{baseUrl}}/api/rides/{{tripId}}/status"
+          }
+        },
+        {
+          "name": "4. Status → arrived",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{driverAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"arrived\"\n}" },
+            "url": "{{baseUrl}}/api/rides/{{tripId}}/status"
+          }
+        },
+        {
+          "name": "5. Status → in_progress",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{driverAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"in_progress\"\n}" },
+            "url": "{{baseUrl}}/api/rides/{{tripId}}/status"
+          }
+        },
+        {
+          "name": "6. Status → completed",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{driverAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"completed\"\n}" },
+            "url": "{{baseUrl}}/api/rides/{{tripId}}/status"
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 — Rate & cancel helpers",
+      "item": [
+        {
+          "name": "Rate completed trip (rider)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{riderAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rating\": 5,\n  \"review\": \"Smooth ride, on time.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/rides/{{tripId}}/rate"
+          }
+        },
+        {
+          "name": "Cancel trip (rider) — use on a fresh requested/accepted trip",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{riderAccessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Plans changed\"\n}"
+            },
+            "url": "{{baseUrl}}/api/rides/{{tripId}}/cancel"
+          }
+        },
+        {
+          "name": "Driver go offline",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAccessToken}}" }],
+            "url": "{{baseUrl}}/api/driver/offline"
+          }
+        }
+      ]
+    }
+  ]
+}
