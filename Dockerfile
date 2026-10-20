@@ -1,4 +1,3 @@
-
 # Stage 1: Install production dependencies
 FROM node:22-alpine AS dependencies
 
@@ -17,9 +16,11 @@ ENV NODE_ENV=production
 
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package*.json ./
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 COPY src ./src
 
 EXPOSE 4000
 
-#CMD ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "src/server.js"]
