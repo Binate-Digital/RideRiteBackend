@@ -7,7 +7,7 @@ services:
     container_name: riderite-backend
     restart: unless-stopped
     ports:
-      - "3087:4000"
+      - "3088:4000"
     volumes:
       - /home/ubuntu/projects/RideRiteBackend:/app
     environment:
