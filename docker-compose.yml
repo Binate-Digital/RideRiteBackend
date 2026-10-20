@@ -1,3 +1,4 @@
+
 services:
   riderite-backend:
     build:
@@ -10,5 +11,9 @@ services:
       - "3088:4000"
     volumes:
       - /home/ubuntu/projects/RideRiteBackend:/app
+      - riderite_node_modules:/app/node_modules
     environment:
       NODE_ENV: development
+
+volumes:
+  riderite_node_modules:
