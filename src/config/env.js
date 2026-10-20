@@ -20,10 +20,18 @@ export const env = {
   appName: process.env.APP_NAME || "RideRite",
   appUrl: process.env.APP_URL || "http://localhost:4000",
   /** Frontend origin for verify/reset email deep links */
-  webAppUrl: process.env.WEB_APP_URL || "http://localhost:8080",
-  corsOrigin:
+  webAppUrl: (process.env.WEB_APP_URL || "http://localhost:8080").replace(
+    /\/$/,
+    "",
+  ),
+  corsOrigin: (
     process.env.CORS_ORIGIN ||
-    "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173",
+    "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173"
+  )
+    .split(",")
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean)
+    .join(","),
   mongodbUri: required("MONGODB_URI", "mongodb://127.0.0.1:27017/riderite"),
   jwtAccessSecret: required(
     "JWT_ACCESS_SECRET",
