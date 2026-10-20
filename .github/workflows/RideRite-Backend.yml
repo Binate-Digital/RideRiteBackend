@@ -1,0 +1,20 @@
+name: RideRite-Backend-Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Run Deployment Script on Remote Server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          bash /home/ubuntu/bash-scripts/riderite-backend.sh
