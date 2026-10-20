@@ -14,6 +14,10 @@ import {
   updateStatusSchema,
   rateRideSchema,
 } from "../validators/rides.schemas.js";
+import {
+  canDriverHandleRides,
+  driverReadinessPayload,
+} from "../utils/driverReadiness.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
 
@@ -178,6 +182,13 @@ export const accept = asyncHandler(async (req, res) => {
   if (!profile?.isOnline || !profile.isApproved) {
     throw httpError(403, "Driver must be online and approved");
   }
+  if (!canDriverHandleRides(profile)) {
+    throw httpError(
+      403,
+      driverReadinessPayload(profile).blockReason ||
+        "Complete Stripe Connect and driver verification to accept rides",
+    );
+  }
 
   // One active trip at a time for driver
   const busy = await Trip.findOne({
@@ -215,6 +226,14 @@ export const accept = asyncHandler(async (req, res) => {
 });
 
 export const reject = asyncHandler(async (req, res) => {
+  const profile = await DriverProfile.findOne({ userId: req.user._id });
+  if (!canDriverHandleRides(profile)) {
+    throw httpError(
+      403,
+      driverReadinessPayload(profile).blockReason ||
+        "Complete Stripe Connect and driver verification before handling rides",
+    );
+  }
   // Soft reject for alpha: driver just ignores; we acknowledge so client can drop it
   const trip = await Trip.findById(req.params.id);
   if (!trip) throw httpError(404, "Trip not found");

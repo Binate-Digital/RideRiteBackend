@@ -33,6 +33,15 @@ export function errorHandler(err, _req, res, _next) {
     });
   }
 
+  // Multer errors
+  if (err.name === "MulterError" || err.code === "LIMIT_FILE_SIZE") {
+    return res.status(400).json({
+      ok: false,
+      error: err.message || "Upload failed",
+      code: err.code || "UPLOAD_ERROR",
+    });
+  }
+
   const status = err.statusCode || err.status || 500;
   const message = err.message || "Internal server error";
 

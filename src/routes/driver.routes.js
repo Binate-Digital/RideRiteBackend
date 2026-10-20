@@ -10,6 +10,7 @@ router.use(requireAuth, requireVerified);
 router.get("/me", driver.getProfile);
 router.post("/ensure", driver.ensureDriverRole);
 router.patch("/vehicle", driver.updateVehicle);
+router.patch("/verification", driver.updateVerification);
 router.post("/online", driver.goOnline);
 router.post("/offline", driver.goOffline);
 router.post("/location", driver.updateLocation);

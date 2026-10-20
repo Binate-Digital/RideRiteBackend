@@ -2,11 +2,14 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
+import path from "node:path";
 import { env } from "./config/env.js";
+import { localUploadRoot } from "./config/upload.config.js";
 import authRoutes from "./routes/auth.routes.js";
 import ridesRoutes from "./routes/rides.routes.js";
 import driverRoutes from "./routes/driver.routes.js";
 import paymentsRoutes from "./routes/payments.routes.js";
+import uploadsRoutes from "./routes/uploads.routes.js";
 import { stripeWebhook } from "./controllers/payments.controller.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 
@@ -53,14 +56,19 @@ export function createApp() {
         rides: "POST /api/rides/*",
         driver: "GET /api/driver/*",
         payments: "POST /api/payments/rides/:id/intent | methods | webhook",
+        uploads: "POST /api/uploads/avatar | file | files | driver-docs",
       },
     });
   });
+
+  // Local-dev uploaded files (when UPLOAD_API_TOKEN is empty)
+  app.use("/uploads", express.static(localUploadRoot));
 
   app.use("/api/auth", authRoutes);
   app.use("/api/rides", ridesRoutes);
   app.use("/api/driver", driverRoutes);
   app.use("/api/payments", paymentsRoutes);
+  app.use("/api/uploads", uploadsRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -1,4 +1,5 @@
 import { User } from "../models/User.js";
+import { DriverProfile } from "../models/DriverProfile.js";
 import { env } from "../config/env.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
@@ -62,6 +63,11 @@ function maybeDevToken(raw) {
   return env.isDev && env.exposeDevTokens ? raw : undefined;
 }
 
+function issueEmailOtp() {
+  // Temporary static OTP for local/dev — never include in API responses or UI.
+  return env.staticEmailOtp || "123456";
+}
+
 export const signup = asyncHandler(async (req, res) => {
   const data = signupSchema.parse(req.body);
   const email = data.email.toLowerCase();
@@ -70,7 +76,7 @@ export const signup = asyncHandler(async (req, res) => {
   if (existing) throw httpError(409, "Email already registered");
 
   const passwordHash = await User.hashPassword(data.password);
-  const verifyRaw = createOpaqueToken();
+  const otp = issueEmailOtp();
 
   const user = await User.create({
     fullName: data.fullName,
@@ -79,20 +85,22 @@ export const signup = asyncHandler(async (req, res) => {
     passwordHash,
     role: data.role || "rider",
     isEmailVerified: false,
-    emailVerifyTokenHash: hashToken(verifyRaw),
+    profileCompleted: false,
+    emailVerifyTokenHash: hashToken(otp),
     emailVerifyExpiresAt: hoursFromNow(env.emailVerifyExpiresHours),
   });
 
-  const mail = verificationEmail({ fullName: user.fullName, token: verifyRaw });
+  if (user.role === "driver") {
+    await DriverProfile.create({ userId: user._id });
+  }
+
+  const mail = verificationEmail({ fullName: user.fullName, otp });
   await sendMail({ to: user.email, ...mail });
 
   res.status(201).json({
     ok: true,
-    message: "Account created. Please verify your email.",
+    message: "Account created. Enter the verification code sent to your email.",
     user: user.toSafeJSON(),
-    ...(maybeDevToken(verifyRaw)
-      ? { dev: { emailVerificationToken: verifyRaw } }
-      : {}),
   });
 });
 
@@ -129,19 +137,26 @@ export const login = asyncHandler(async (req, res) => {
 });
 
 export const verifyEmail = asyncHandler(async (req, res) => {
-  const raw =
-    req.body?.token ||
-    req.query?.token ||
-    req.params?.token;
-  const { token } = verifyEmailSchema.parse({ token: raw });
-  const tokenHash = hashToken(token);
+  const parsed = verifyEmailSchema.parse({
+    email: req.body?.email || req.query?.email,
+    otp: req.body?.otp || req.query?.otp,
+    token: req.body?.token || req.query?.token || req.params?.token,
+  });
 
-  const user = await User.findOne({
+  const code = parsed.otp || parsed.token;
+  const tokenHash = hashToken(code);
+
+  const query = {
     emailVerifyTokenHash: tokenHash,
     emailVerifyExpiresAt: { $gt: new Date() },
-  }).select("+emailVerifyTokenHash +emailVerifyExpiresAt +refreshTokens");
+  };
+  if (parsed.email) query.email = parsed.email.toLowerCase();
 
-  if (!user) throw httpError(400, "Invalid or expired verification token");
+  const user = await User.findOne(query).select(
+    "+emailVerifyTokenHash +emailVerifyExpiresAt +refreshTokens",
+  );
+
+  if (!user) throw httpError(400, "Invalid or expired verification code");
 
   user.isEmailVerified = true;
   user.emailVerifyTokenHash = null;
@@ -168,24 +183,21 @@ export const resendVerification = asyncHandler(async (req, res) => {
   if (!user || user.isEmailVerified) {
     return res.json({
       ok: true,
-      message: "If that email exists and is unverified, a new link was sent.",
+      message: "If that email exists and is unverified, a new code was sent.",
     });
   }
 
-  const verifyRaw = createOpaqueToken();
-  user.emailVerifyTokenHash = hashToken(verifyRaw);
+  const otp = issueEmailOtp();
+  user.emailVerifyTokenHash = hashToken(otp);
   user.emailVerifyExpiresAt = hoursFromNow(env.emailVerifyExpiresHours);
   await user.save();
 
-  const mail = verificationEmail({ fullName: user.fullName, token: verifyRaw });
+  const mail = verificationEmail({ fullName: user.fullName, otp });
   await sendMail({ to: user.email, ...mail });
 
   res.json({
     ok: true,
-    message: "If that email exists and is unverified, a new link was sent.",
-    ...(maybeDevToken(verifyRaw)
-      ? { dev: { emailVerificationToken: verifyRaw } }
-      : {}),
+    message: "If that email exists and is unverified, a new code was sent.",
   });
 });
 
@@ -325,6 +337,10 @@ export const updateProfile = asyncHandler(async (req, res) => {
   const data = updateProfileSchema.parse(req.body);
   if (data.fullName !== undefined) req.user.fullName = data.fullName;
   if (data.phone !== undefined) req.user.phone = data.phone;
+  if (data.avatarUrl !== undefined) req.user.avatarUrl = data.avatarUrl;
+  if (data.profileCompleted !== undefined) {
+    req.user.profileCompleted = data.profileCompleted;
+  }
   await req.user.save();
   res.json({ ok: true, user: req.user.toSafeJSON() });
 });

@@ -38,6 +38,14 @@ export const env = {
   emailVerifyExpiresHours: Number(process.env.EMAIL_VERIFY_EXPIRES_HOURS || 24),
   passwordResetExpiresHours: Number(process.env.PASSWORD_RESET_EXPIRES_HOURS || 1),
   exposeDevTokens: String(process.env.EXPOSE_DEV_TOKENS || "true") === "true",
+  /** Temporary static email OTP for local/dev verification (never send to client UI). */
+  staticEmailOtp: String(process.env.STATIC_EMAIL_OTP || "123456"),
+
+  /** Staging/production file upload service (S3 via appsstaging upload API). */
+  uploadApiUrl:
+    process.env.UPLOAD_API_URL || "https://client1.appsstaging.com:3019/upload",
+  uploadApiToken: process.env.UPLOAD_API_TOKEN || "",
+  uploadProjectName: process.env.UPLOAD_PROJECT_NAME || "RideRite",
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
   stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || "",

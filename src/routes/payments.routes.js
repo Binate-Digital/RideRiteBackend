@@ -1,6 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import * as payments from "../controllers/payments.controller.js";
+import * as connect from "../controllers/connect.controller.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireVerified } from "../middleware/requireVerified.js";
 
@@ -29,5 +30,9 @@ router.get("/methods", payments.listPaymentMethods);
 router.post("/methods/mock-attach", writeLimiter, payments.mockAttachCard);
 router.post("/methods/:id/default", writeLimiter, payments.setDefaultPaymentMethod);
 router.delete("/methods/:id", writeLimiter, payments.detachPaymentMethod);
+
+router.post("/connect/account", writeLimiter, connect.createConnectAccount);
+router.get("/connect/status", connect.getConnectStatus);
+router.post("/connect/onboarding-link", writeLimiter, connect.refreshOnboardingLink);
 
 export default router;

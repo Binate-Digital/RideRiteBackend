@@ -19,13 +19,11 @@ export async function sendMail({ to, subject, text, html }) {
   return { ok: true, provider: "console" };
 }
 
-export function verificationEmail({ fullName, token }) {
-  const link = `${env.webAppUrl}/verify-email?token=${encodeURIComponent(token)}`;
-  const apiLink = `${env.appUrl}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+export function verificationEmail({ fullName, otp }) {
   return {
-    subject: `Verify your ${env.appName} email`,
-    text: `Hi ${fullName},\n\nVerify your email:\n${link}\n\nOr use this token in the app:\n${token}\n\nAPI fallback: ${apiLink}\n\nExpires in ${env.emailVerifyExpiresHours} hour(s).`,
-    html: `<p>Hi ${fullName},</p><p><a href="${link}">Verify your email</a></p><p>Or paste this token in the app:</p><pre>${token}</pre>`,
+    subject: `Your ${env.appName} verification code`,
+    text: `Hi ${fullName},\n\nYour verification code is: ${otp}\n\nEnter this code in the app to verify your email.\nExpires in ${env.emailVerifyExpiresHours} hour(s).`,
+    html: `<p>Hi ${fullName},</p><p>Your verification code is:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px">${otp}</p><p>Enter this code in the app to verify your email.</p>`,
   };
 }
 

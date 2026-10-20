@@ -24,6 +24,8 @@ const userSchema = new mongoose.Schema(
       index: true,
     },
     phone: { type: String, trim: true, maxlength: 20, default: null },
+    avatarUrl: { type: String, default: null },
+    profileCompleted: { type: Boolean, default: false },
     passwordHash: { type: String, required: true, select: false },
     role: {
       type: String,
@@ -59,6 +61,8 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     fullName: this.fullName,
     email: this.email,
     phone: this.phone,
+    avatarUrl: this.avatarUrl,
+    profileCompleted: this.profileCompleted,
     role: this.role,
     isEmailVerified: this.isEmailVerified,
     isActive: this.isActive,

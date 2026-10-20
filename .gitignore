@@ -30,5 +30,8 @@ coverage/
 # Optional local dumps
 *.local.json
 
+# Local file uploads (dev fallback when UPLOAD_API_TOKEN empty)
+uploads/
+
 # Postman (local only — not tracked)
 postman/
