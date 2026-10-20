@@ -17,11 +17,28 @@ export function createApp() {
   const app = express();
 
   app.set("trust proxy", 1);
-  app.use(helmet());
+  app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+
+  const allowedOrigins =
+    env.corsOrigin === "*"
+      ? true
+      : env.corsOrigin.split(",").map((s) => s.trim().replace(/\/$/, "")).filter(Boolean);
+
   app.use(
     cors({
-      origin: env.corsOrigin === "*" ? true : env.corsOrigin.split(",").map((s) => s.trim()),
+      origin(origin, cb) {
+        // Non-browser / same-origin tools send no Origin
+        if (!origin) return cb(null, true);
+        if (allowedOrigins === true) return cb(null, true);
+        const normalized = origin.replace(/\/$/, "");
+        if (allowedOrigins.includes(normalized)) return cb(null, true);
+        console.warn(`[cors] blocked origin: ${origin}`);
+        return cb(new Error(`CORS blocked for origin: ${origin}`));
+      },
       credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+      optionsSuccessStatus: 204,
     }),
   );
 
