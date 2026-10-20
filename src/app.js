@@ -19,21 +19,27 @@ export function createApp() {
   app.set("trust proxy", 1);
   app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
-  const allowedOrigins =
-    env.corsOrigin === "*"
-      ? true
-      : env.corsOrigin.split(",").map((s) => s.trim().replace(/\/$/, "")).filter(Boolean);
+  // Always allow WEB_APP_URL + CORS_ORIGIN list (UAT frontend is often only in WEB_APP_URL).
+  const allowedOriginSet = new Set(
+    [env.webAppUrl, ...String(env.corsOrigin || "").split(",")]
+      .map((s) => String(s || "").trim().replace(/\/$/, ""))
+      .filter(Boolean),
+  );
+  const allowAllOrigins = env.corsOrigin === "*";
 
   app.use(
     cors({
       origin(origin, cb) {
         // Non-browser / same-origin tools send no Origin
         if (!origin) return cb(null, true);
-        if (allowedOrigins === true) return cb(null, true);
+        if (allowAllOrigins) return cb(null, true);
         const normalized = origin.replace(/\/$/, "");
-        if (allowedOrigins.includes(normalized)) return cb(null, true);
-        console.warn(`[cors] blocked origin: ${origin}`);
-        return cb(new Error(`CORS blocked for origin: ${origin}`));
+        if (allowedOriginSet.has(normalized)) return cb(null, true);
+        // Never throw — cors Error becomes HTTP 500 and browsers report "CORS failed"
+        console.warn(
+          `[cors] blocked origin: ${origin} (allowed: ${[...allowedOriginSet].join(", ")})`,
+        );
+        return cb(null, false);
       },
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
