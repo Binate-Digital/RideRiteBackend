@@ -21,4 +21,5 @@ COPY src ./src
 
 EXPOSE 4000
 
+#CMD ["tail", "-f", "/dev/null"]
 CMD ["node", "src/server.js"]
