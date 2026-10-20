@@ -1,0 +1,14 @@
+services:
+  riderite-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: riderite-backend:latest
+    container_name: riderite-backend
+    restart: unless-stopped
+    ports:
+      - "3087:4000"
+    volumes:
+      - /home/ubuntu/projects/RideRiteBackend:/app
+    environment:
+      NODE_ENV: development
