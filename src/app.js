@@ -11,6 +11,8 @@ import driverRoutes from "./routes/driver.routes.js";
 import paymentsRoutes from "./routes/payments.routes.js";
 import uploadsRoutes from "./routes/uploads.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
+import addressesRoutes from "./routes/addresses.routes.js";
+import subscriptionsRoutes from "./routes/subscriptions.routes.js";
 import { stripeWebhook } from "./controllers/payments.controller.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 
@@ -95,6 +97,8 @@ export function createApp() {
   app.use("/api/payments", paymentsRoutes);
   app.use("/api/uploads", uploadsRoutes);
   app.use("/api/admin", adminRoutes);
+  app.use("/api/addresses", addressesRoutes);
+  app.use("/api/subscriptions", subscriptionsRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -13,6 +13,7 @@ import {
   isDriverVerificationComplete,
   isStripeConnectReady,
 } from "../utils/driverReadiness.js";
+import { driverHasActiveSubscription } from "./subscriptions.controller.js";
 
 async function getOrCreateProfile(user) {
   let profile = await DriverProfile.findOne({ userId: user._id });
@@ -32,11 +33,12 @@ async function getOrCreateProfile(user) {
 
 export const getProfile = asyncHandler(async (req, res) => {
   const profile = await getOrCreateProfile(req.user);
+  const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   res.json({
     ok: true,
     user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
-    readiness: driverReadinessPayload(profile),
+    readiness: driverReadinessPayload(profile, { subscriptionActive }),
   });
 });
 
@@ -45,10 +47,11 @@ export const updateVehicle = asyncHandler(async (req, res) => {
   const profile = await getOrCreateProfile(req.user);
   Object.assign(profile, data);
   await profile.save();
+  const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   res.json({
     ok: true,
     driver: profile.toSafeJSON(),
-    readiness: driverReadinessPayload(profile),
+    readiness: driverReadinessPayload(profile, { subscriptionActive }),
   });
 });
 
@@ -84,15 +87,21 @@ export const updateVerification = asyncHandler(async (req, res) => {
 
   await profile.save();
 
+  const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   res.json({
     ok: true,
     driver: profile.toSafeJSON(),
-    readiness: driverReadinessPayload(profile),
+    readiness: driverReadinessPayload(profile, { subscriptionActive }),
   });
 });
 
 export const goOnline = asyncHandler(async (req, res) => {
   const profile = await getOrCreateProfile(req.user);
+  const subscriptionActive = await driverHasActiveSubscription(req.user._id);
+  if (!profile.isApproved) throw httpError(403, "Driver not approved");
+  if (!subscriptionActive) {
+    throw httpError(403, "Active driver subscription required ($100/mo or $32/wk)");
+  }
   if (!isStripeConnectReady(profile)) {
     throw httpError(403, "Complete Stripe Connect onboarding before going online");
   }
@@ -102,12 +111,14 @@ export const goOnline = asyncHandler(async (req, res) => {
       "Upload driver license and verification documents before going online",
     );
   }
-  if (!profile.isApproved) throw httpError(403, "Driver not approved");
   if (!profile.vehiclePlate) {
     throw httpError(400, "Add vehicle plate before going online");
   }
-  if (!canDriverHandleRides(profile)) {
-    throw httpError(403, driverReadinessPayload(profile).blockReason || "Not ready");
+  if (!canDriverHandleRides(profile, { subscriptionActive })) {
+    throw httpError(
+      403,
+      driverReadinessPayload(profile, { subscriptionActive }).blockReason || "Not ready",
+    );
   }
   profile.isOnline = true;
   await profile.save();
@@ -135,10 +146,11 @@ export const ensureDriverRole = asyncHandler(async (req, res) => {
     req.user.role = "driver";
   }
   const profile = await getOrCreateProfile(req.user);
+  const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   res.json({
     ok: true,
     user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
-    readiness: driverReadinessPayload(profile),
+    readiness: driverReadinessPayload(profile, { subscriptionActive }),
   });
 });

@@ -117,8 +117,8 @@ export const cancel = asyncHandler(async (req, res) => {
     throw httpError(400, "Cannot cancel a ride that is already in progress or completed");
   }
 
-  const elapsedSec = (Date.now() - new Date(trip.requestedAt || trip.createdAt).getTime()) / 1000;
-  const driverAssigned = !!trip.driverId;
+  // TRD: cancellation fee only after driver is en route (not merely assigned)
+  const driverEnRoute = ["en_route", "arrived"].includes(trip.status);
 
   let refundCents = 0;
   let feeCents = 0;
@@ -128,15 +128,15 @@ export const cancel = asyncHandler(async (req, res) => {
   if (!trip.paid) {
     cancelStatus = "no_charge";
     message = "Ride canceled. No payment was taken.";
-  } else if (elapsedSec <= CANCEL_GRACE_SECONDS || !driverAssigned) {
+  } else if (!driverEnRoute) {
     refundCents = trip.fareCents;
     cancelStatus = "refunded_full";
-    message = "Canceled within the grace window. Full refund issued.";
+    message = "Canceled before driver was en route. Full refund issued.";
   } else {
     feeCents = Math.min(CANCEL_FEE_CENTS_AFTER_MATCH, trip.fareCents);
     refundCents = Math.max(0, trip.fareCents - feeCents);
     cancelStatus = refundCents > 0 ? "refunded_partial" : "no_refund";
-    message = `Driver was already assigned. $${(feeCents / 100).toFixed(2)} cancellation fee applied.`;
+    message = `Driver was already en route. $${(feeCents / 100).toFixed(2)} cancellation fee applied.`;
   }
 
   trip.status = "cancelled";
@@ -162,6 +162,10 @@ export const listOpen = asyncHandler(async (req, res) => {
   if (!profile) throw httpError(400, "Complete driver profile first");
   if (!profile.isOnline) throw httpError(400, "Go online to see ride requests");
   if (!profile.isApproved) throw httpError(403, "Driver not approved yet");
+  const { driverHasActiveSubscription } = await import("./subscriptions.controller.js");
+  if (!(await driverHasActiveSubscription(req.user._id))) {
+    throw httpError(403, "Active driver subscription required");
+  }
 
   const trips = await Trip.find({
     status: "requested",
@@ -179,14 +183,16 @@ export const listOpen = asyncHandler(async (req, res) => {
 
 export const accept = asyncHandler(async (req, res) => {
   const profile = await DriverProfile.findOne({ userId: req.user._id });
+  const { driverHasActiveSubscription } = await import("./subscriptions.controller.js");
+  const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   if (!profile?.isOnline || !profile.isApproved) {
     throw httpError(403, "Driver must be online and approved");
   }
-  if (!canDriverHandleRides(profile)) {
+  if (!canDriverHandleRides(profile, { subscriptionActive })) {
     throw httpError(
       403,
-      driverReadinessPayload(profile).blockReason ||
-        "Complete Stripe Connect and driver verification to accept rides",
+      driverReadinessPayload(profile, { subscriptionActive }).blockReason ||
+        "Complete Stripe Connect, subscription, and verification to accept rides",
     );
   }
 
