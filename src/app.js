@@ -26,9 +26,16 @@ export function createApp() {
   app.set("trust proxy", 1);
   app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
-  // Always allow WEB_APP_URL + CORS_ORIGIN list (UAT frontend is often only in WEB_APP_URL).
+  // Always allow WEB_APP_URL + CORS_ORIGIN list + known UAT frontends.
+  const knownUatOrigins = [
+    "https://riderite-admin.deployment-uat.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+  ];
   const allowedOriginSet = new Set(
-    [env.webAppUrl, ...String(env.corsOrigin || "").split(",")]
+    [env.webAppUrl, ...String(env.corsOrigin || "").split(","), ...knownUatOrigins]
       .map((s) => String(s || "").trim().replace(/\/$/, ""))
       .filter(Boolean),
   );
