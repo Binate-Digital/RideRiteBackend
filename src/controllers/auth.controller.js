@@ -364,3 +364,36 @@ export const changePassword = asyncHandler(async (req, res) => {
     message: "Password changed. Please log in again.",
   });
 });
+
+/** POST /api/auth/social/google|apple — OAuth stubs until provider keys are provisioned */
+export const socialStub = asyncHandler(async (req, res) => {
+  const provider = String(req.params.provider || "").toLowerCase();
+  if (!["google", "apple"].includes(provider)) {
+    throw httpError(404, "Unknown social provider");
+  }
+  res.status(501).json({
+    ok: false,
+    error: `${provider} sign-in is not enabled yet`,
+    code: "SOCIAL_AUTH_PENDING",
+    hint: "Configure OAuth client IDs on the API, then enable this route.",
+  });
+});
+
+/** POST /api/auth/phone/start — SMS OTP stub */
+export const phoneStartStub = asyncHandler(async (_req, res) => {
+  res.status(501).json({
+    ok: false,
+    error: "Phone OTP sign-in is not enabled yet",
+    code: "PHONE_AUTH_PENDING",
+    hint: "Provision Twilio Verify (or similar) and wire this endpoint.",
+  });
+});
+
+/** POST /api/auth/phone/verify — SMS OTP stub */
+export const phoneVerifyStub = asyncHandler(async (_req, res) => {
+  res.status(501).json({
+    ok: false,
+    error: "Phone OTP verification is not enabled yet",
+    code: "PHONE_AUTH_PENDING",
+  });
+});

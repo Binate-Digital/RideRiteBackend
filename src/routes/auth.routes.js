@@ -29,6 +29,9 @@ router.post("/resend-verification", sensitiveLimiter, auth.resendVerification);
 router.post("/forgot-password", sensitiveLimiter, auth.forgotPassword);
 router.post("/reset-password", sensitiveLimiter, auth.resetPassword);
 router.post("/refresh", authLimiter, auth.refresh);
+router.post("/social/:provider", authLimiter, auth.socialStub);
+router.post("/phone/start", sensitiveLimiter, auth.phoneStartStub);
+router.post("/phone/verify", sensitiveLimiter, auth.phoneVerifyStub);
 
 router.get("/me", requireAuth, auth.me);
 router.patch("/me", requireAuth, auth.updateProfile);

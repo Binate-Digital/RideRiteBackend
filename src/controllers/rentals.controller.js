@@ -5,8 +5,65 @@ import { httpError } from "../middleware/errorHandler.js";
 
 const P2P_COMMISSION_RATE = 0.15;
 
+const FLEET_SEED = [
+  {
+    title: "Tesla Model 3 Long Range",
+    make: "Tesla",
+    model: "Model 3",
+    year: 2025,
+    vehicleType: "sedan",
+    dailyRateCents: 8900,
+    city: "Miami",
+    state: "FL",
+    photos: ["https://images.unsplash.com/photo-1560958089-b8a1929cea89?auto=format&fit=crop&w=800&q=80"],
+  },
+  {
+    title: "Cadillac Escalade Platinum",
+    make: "Cadillac",
+    model: "Escalade",
+    year: 2025,
+    vehicleType: "suv",
+    dailyRateCents: 18500,
+    city: "Orlando",
+    state: "FL",
+    photos: ["https://images.unsplash.com/photo-1549399542-7e3f8b79c341?auto=format&fit=crop&w=800&q=80"],
+  },
+  {
+    title: "Ford F-150 Lightning",
+    make: "Ford",
+    model: "F-150 Lightning",
+    year: 2024,
+    vehicleType: "truck",
+    dailyRateCents: 12500,
+    city: "Jacksonville",
+    state: "FL",
+    photos: ["https://images.unsplash.com/photo-1605893477799-b99e3b8b93fe?auto=format&fit=crop&w=800&q=80"],
+  },
+];
+
+async function ensureFleetSeed() {
+  const fleetCount = await RentalListing.countDocuments({ source: "fleet" });
+  if (fleetCount > 0) return;
+  const { User } = await import("../models/User.js");
+  let admin = await User.findOne({ role: "admin" });
+  if (!admin) admin = await User.findOne().sort({ createdAt: 1 });
+  if (!admin) return;
+  await RentalListing.insertMany(
+    FLEET_SEED.map((f) => ({
+      ...f,
+      ownerId: admin._id,
+      source: "fleet",
+      status: "active",
+      description: "RideRite platform fleet vehicle",
+      plate: "FLEET",
+      color: "",
+    })),
+  );
+}
+
 /** GET /api/rentals/listings?source=&vehicleType=&city=&q= */
 export const listListings = asyncHandler(async (req, res) => {
+  await ensureFleetSeed();
   const filter = { status: "active" };
   if (req.query.source === "peer" || req.query.source === "fleet") filter.source = req.query.source;
   if (["sedan", "suv", "truck"].includes(String(req.query.vehicleType || ""))) {
