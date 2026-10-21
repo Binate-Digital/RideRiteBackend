@@ -17,7 +17,7 @@ export const driverVerificationSchema = z.object({
   vehicleModel: z.string().trim().min(1).max(60).optional(),
   vehicleColor: z.string().trim().max(40).optional(),
   vehiclePlate: z.string().trim().min(2).max(20).optional(),
-  vehicleYear: z.coerce.number().int().min(1990).max(2100).optional(),
+  vehicleYear: z.coerce.number().int().min(1990).max(2050).optional(),
   vehicleVin: z.string().trim().length(17).optional(),
   insuranceCarrier: z.string().trim().min(2).max(80).optional(),
   insurancePolicyNumber: z.string().trim().min(2).max(60).optional(),

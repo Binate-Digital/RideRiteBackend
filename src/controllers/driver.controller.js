@@ -68,7 +68,13 @@ export const updateVerification = asyncHandler(async (req, res) => {
     profile.isApproved = true;
     profile.verificationStatus = "approved";
   } else if (!skipForLater) {
-    profile.verificationStatus = "incomplete";
+    // Become-driver form (docs may still be pending) — mark as submitted for review
+    if (profile.dlNumber && profile.insuranceCarrier && profile.dateOfBirth) {
+      profile.verificationStatus = "pending";
+      profile.verificationSubmittedAt = profile.verificationSubmittedAt || new Date();
+    } else {
+      profile.verificationStatus = "incomplete";
+    }
   }
 
   await profile.save();
