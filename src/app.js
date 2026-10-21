@@ -10,6 +10,7 @@ import ridesRoutes from "./routes/rides.routes.js";
 import driverRoutes from "./routes/driver.routes.js";
 import paymentsRoutes from "./routes/payments.routes.js";
 import uploadsRoutes from "./routes/uploads.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
 import { stripeWebhook } from "./controllers/payments.controller.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 
@@ -80,6 +81,7 @@ export function createApp() {
         driver: "GET /api/driver/*",
         payments: "POST /api/payments/rides/:id/intent | methods | webhook",
         uploads: "POST /api/uploads/avatar | file | files | driver-docs",
+        admin: "GET /api/admin/analytics | users | drivers | trips",
       },
     });
   });
@@ -92,6 +94,7 @@ export function createApp() {
   app.use("/api/driver", driverRoutes);
   app.use("/api/payments", paymentsRoutes);
   app.use("/api/uploads", uploadsRoutes);
+  app.use("/api/admin", adminRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
