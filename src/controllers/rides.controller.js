@@ -227,6 +227,9 @@ export const accept = asyncHandler(async (req, res) => {
 
 export const reject = asyncHandler(async (req, res) => {
   const profile = await DriverProfile.findOne({ userId: req.user._id });
+  if (!profile?.isApproved) {
+    throw httpError(403, "Driver not approved yet");
+  }
   if (!canDriverHandleRides(profile)) {
     throw httpError(
       403,

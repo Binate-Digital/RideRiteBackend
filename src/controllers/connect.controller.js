@@ -11,7 +11,11 @@ async function ensureDriverProfile(user) {
       user.role = "driver";
       await user.save();
     }
-    profile = await DriverProfile.create({ userId: user._id });
+    profile = await DriverProfile.create({
+      userId: user._id,
+      isApproved: false,
+      verificationStatus: "incomplete",
+    });
   }
   return profile;
 }

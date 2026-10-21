@@ -47,8 +47,8 @@ const driverProfileSchema = new mongoose.Schema(
     verificationSubmittedAt: { type: Date, default: null },
     verificationSkippedAt: { type: Date, default: null },
 
-    // Alpha approval (admin KYC later)
-    isApproved: { type: Boolean, default: true },
+    // Admin must approve after reviewing license / docs
+    isApproved: { type: Boolean, default: false },
     stripeConnectAccountId: { type: String, default: null, index: true },
     stripeConnectChargesEnabled: { type: Boolean, default: false },
     stripeConnectPayoutsEnabled: { type: Boolean, default: false },

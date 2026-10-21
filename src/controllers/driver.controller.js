@@ -21,7 +21,11 @@ async function getOrCreateProfile(user) {
       user.role = "driver";
       await user.save();
     }
-    profile = await DriverProfile.create({ userId: user._id });
+    profile = await DriverProfile.create({
+      userId: user._id,
+      isApproved: false,
+      verificationStatus: "incomplete",
+    });
   }
   return profile;
 }
@@ -61,18 +65,19 @@ export const updateVerification = asyncHandler(async (req, res) => {
     profile.verificationSkippedAt = new Date();
   }
 
+  // Never auto-approve — admin reviews license/docs in RideRiteAdmin first.
   if (isDriverVerificationComplete(profile)) {
+    profile.isApproved = false;
     profile.verificationStatus = "pending";
     profile.verificationSubmittedAt = new Date();
-    // Auto-approve for alpha; replace with admin review later
-    profile.isApproved = true;
-    profile.verificationStatus = "approved";
   } else if (!skipForLater) {
     // Become-driver form (docs may still be pending) — mark as submitted for review
     if (profile.dlNumber && profile.insuranceCarrier && profile.dateOfBirth) {
+      profile.isApproved = false;
       profile.verificationStatus = "pending";
       profile.verificationSubmittedAt = profile.verificationSubmittedAt || new Date();
     } else {
+      profile.isApproved = false;
       profile.verificationStatus = "incomplete";
     }
   }

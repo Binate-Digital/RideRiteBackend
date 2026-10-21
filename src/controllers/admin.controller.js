@@ -38,7 +38,8 @@ export const analytics = asyncHandler(async (_req, res) => {
       { $group: { _id: null, total: { $sum: "$amountCents" } } },
     ]),
     DriverProfile.countDocuments({
-      $or: [{ isApproved: true }, { verificationStatus: "approved" }],
+      isApproved: true,
+      verificationStatus: "approved",
     }),
     DriverProfile.countDocuments({
       verificationStatus: { $in: ["pending", "incomplete"] },
@@ -118,14 +119,13 @@ export const listDrivers = asyncHandler(async (_req, res) => {
     ok: true,
     drivers: profiles.map((p) => {
       const u = byId.get(p.userId.toString());
+      // Approved only after admin review — do not treat legacy isApproved alone as approved
       const status =
-        p.verificationStatus === "approved" || p.isApproved
+        p.verificationStatus === "approved" && p.isApproved
           ? "approved"
           : p.verificationStatus === "rejected"
             ? "rejected"
-            : p.verificationStatus === "pending"
-              ? "pending"
-              : "pending";
+            : "pending";
       return {
         id: p._id.toString(),
         userId: p.userId.toString(),
@@ -186,20 +186,30 @@ export const setDriverStatus = asyncHandler(async (req, res) => {
   if (status === "approved") {
     profile.verificationStatus = "approved";
     profile.isApproved = true;
+    profile.isOnline = false;
   } else if (status === "rejected" || status === "suspended") {
     profile.verificationStatus = "rejected";
     profile.isApproved = false;
+    profile.isOnline = false;
   } else {
     profile.verificationStatus = "pending";
     profile.isApproved = false;
+    profile.isOnline = false;
   }
   // reason reserved for audit/email hooks later
   void reason;
   await profile.save();
 
-  // Keep User.role in sync when approving
   if (status === "approved") {
-    await User.findByIdAndUpdate(profile.userId, { role: "driver" });
+    await User.findByIdAndUpdate(profile.userId, {
+      role: "driver",
+      isActive: true,
+    });
+  } else if (status === "rejected" || status === "suspended") {
+    // Rejected drivers cannot log in
+    await User.findByIdAndUpdate(profile.userId, { isActive: false });
+  } else {
+    await User.findByIdAndUpdate(profile.userId, { isActive: true });
   }
 
   res.json({

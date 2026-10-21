@@ -91,7 +91,11 @@ export const signup = asyncHandler(async (req, res) => {
   });
 
   if (user.role === "driver") {
-    await DriverProfile.create({ userId: user._id });
+    await DriverProfile.create({
+      userId: user._id,
+      isApproved: false,
+      verificationStatus: "incomplete",
+    });
   }
 
   const mail = verificationEmail({ fullName: user.fullName, otp });
