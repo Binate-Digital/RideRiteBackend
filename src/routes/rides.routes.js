@@ -1,6 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import * as rides from "../controllers/rides.controller.js";
+import * as tripChat from "../controllers/tripChat.controller.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requireVerified } from "../middleware/requireVerified.js";
 
@@ -22,6 +23,8 @@ router.get("/", requireAuth, requireVerified, rides.listMine);
 router.get("/open", requireAuth, requireVerified, requireRole("driver", "admin"), rides.listOpen);
 
 router.get("/:id", requireAuth, requireVerified, rides.getOne);
+router.get("/:id/messages", requireAuth, requireVerified, tripChat.listMessages);
+router.post("/:id/messages", requireAuth, requireVerified, writeLimiter, tripChat.sendMessage);
 router.post("/:id/cancel", requireAuth, requireVerified, writeLimiter, rides.cancel);
 router.post("/:id/accept", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.accept);
 router.post("/:id/reject", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.reject);

@@ -43,6 +43,17 @@ const userSchema = new mongoose.Schema(
     lastLoginAt: { type: Date, default: null },
     stripeCustomerId: { type: String, default: null, index: true },
     defaultPaymentMethodId: { type: String, default: null },
+    notificationPrefs: {
+      ride: { type: Boolean, default: true },
+      payment: { type: Boolean, default: true },
+      rental: { type: Boolean, default: true },
+      chauffeur: { type: Boolean, default: true },
+      subscription: { type: Boolean, default: true },
+      bonus: { type: Boolean, default: true },
+      maintenance: { type: Boolean, default: true },
+      payout: { type: Boolean, default: true },
+      promo: { type: Boolean, default: false },
+    },
   },
   { timestamps: true },
 );

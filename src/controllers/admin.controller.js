@@ -2,8 +2,23 @@ import { User } from "../models/User.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { Trip } from "../models/Trip.js";
 import { Payment } from "../models/Payment.js";
+import { DriverSubscription } from "../models/DriverSubscription.js";
+import { RentalListing } from "../models/RentalListing.js";
+import { RentalBooking } from "../models/RentalBooking.js";
+import { ChauffeurBooking } from "../models/ChauffeurBooking.js";
+import { DriverBonus } from "../models/DriverBonus.js";
+import { MaintenanceRecord } from "../models/MaintenanceRecord.js";
+import { AuditLog } from "../models/AuditLog.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
+
+async function audit(actorId, action, targetType, targetId, meta = {}) {
+  try {
+    await AuditLog.create({ actorId, action, targetType, targetId, meta });
+  } catch {
+    /* ignore */
+  }
+}
 
 const ACTIVE_TRIP_STATUSES = ["requested", "accepted", "en_route", "arrived", "in_progress"];
 
@@ -314,9 +329,307 @@ export const listTrips = asyncHandler(async (req, res) => {
       paymentMethod: t.paymentMethod,
       paid: Boolean(t.paid),
       fareCents: t.fareCents,
+      cancelFeeCents: t.cancelFeeCents ?? 0,
+      refundCents: t.refundCents ?? 0,
       riderId: t.riderId?.toString() ?? null,
       driverId: t.driverId?.toString() ?? null,
       createdAt: t.createdAt,
     })),
+  });
+});
+
+/** GET /api/admin/subscriptions */
+export const listSubscriptions = asyncHandler(async (_req, res) => {
+  const rows = await DriverSubscription.find().sort({ updatedAt: -1 }).limit(200).lean();
+  const userIds = rows.map((r) => r.userId);
+  const users = await User.find({ _id: { $in: userIds } }).select("fullName email").lean();
+  const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  res.json({
+    ok: true,
+    subscriptions: rows.map((s) => ({
+      id: s._id.toString(),
+      userId: s.userId.toString(),
+      fullName: byId.get(s.userId.toString())?.fullName ?? null,
+      email: byId.get(s.userId.toString())?.email ?? null,
+      plan: s.plan,
+      status: s.status,
+      amountCents: s.amountCents,
+      currentPeriodEnd: s.currentPeriodEnd,
+      active: s.status === "active" && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > new Date(),
+    })),
+  });
+});
+
+/** GET /api/admin/rentals/listings */
+export const listRentalListings = asyncHandler(async (req, res) => {
+  const filter = {};
+  if (req.query.status) filter.status = req.query.status;
+  if (req.query.source) filter.source = req.query.source;
+  const rows = await RentalListing.find(filter).sort({ createdAt: -1 }).limit(200);
+  res.json({ ok: true, listings: rows.map((r) => r.toSafeJSON()) });
+});
+
+/** PATCH /api/admin/rentals/listings/:id — approve/pause fleet or peer listings */
+export const updateRentalListing = asyncHandler(async (req, res) => {
+  const row = await RentalListing.findById(req.params.id);
+  if (!row) throw httpError(404, "Listing not found");
+  if (req.body?.status) row.status = req.body.status;
+  if (req.body?.dailyRateCents != null) row.dailyRateCents = Number(req.body.dailyRateCents);
+  await row.save();
+  await audit(req.user._id, "rental.listing.update", "RentalListing", row._id.toString(), {
+    status: row.status,
+  });
+  res.json({ ok: true, listing: row.toSafeJSON() });
+});
+
+/** GET /api/admin/rentals/bookings */
+export const listRentalBookings = asyncHandler(async (_req, res) => {
+  const rows = await RentalBooking.find().sort({ createdAt: -1 }).limit(200);
+  res.json({ ok: true, bookings: rows.map((r) => r.toSafeJSON()) });
+});
+
+/** GET /api/admin/chauffeur */
+export const listChauffeur = asyncHandler(async (_req, res) => {
+  const rows = await ChauffeurBooking.find().sort({ createdAt: -1 }).limit(200);
+  res.json({ ok: true, bookings: rows.map((r) => r.toSafeJSON()) });
+});
+
+/** GET /api/admin/bonuses */
+export const listBonuses = asyncHandler(async (req, res) => {
+  const filter = {};
+  if (req.query.status) filter.status = req.query.status;
+  const rows = await DriverBonus.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  const userIds = rows.map((r) => r.userId);
+  const users = await User.find({ _id: { $in: userIds } }).select("fullName email").lean();
+  const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  res.json({
+    ok: true,
+    bonuses: rows.map((b) => ({
+      ...b,
+      id: b._id.toString(),
+      userId: b.userId.toString(),
+      fullName: byId.get(b.userId.toString())?.fullName ?? null,
+      email: byId.get(b.userId.toString())?.email ?? null,
+    })),
+  });
+});
+
+/** PATCH /api/admin/bonuses/:id */
+export const updateBonus = asyncHandler(async (req, res) => {
+  const row = await DriverBonus.findById(req.params.id);
+  if (!row) throw httpError(404, "Bonus not found");
+  if (["approved", "rejected", "disbursed"].includes(req.body?.status)) {
+    row.status = req.body.status;
+    row.reviewedAt = new Date();
+    if (req.body.status === "disbursed") row.disbursedAt = new Date();
+  }
+  if (req.body?.adminNotes != null) row.adminNotes = String(req.body.adminNotes);
+  await row.save();
+  await audit(req.user._id, "bonus.update", "DriverBonus", row._id.toString(), {
+    status: row.status,
+  });
+  res.json({ ok: true, bonus: row.toSafeJSON() });
+});
+
+/** GET /api/admin/maintenance */
+export const listMaintenance = asyncHandler(async (_req, res) => {
+  const rows = await MaintenanceRecord.find().sort({ createdAt: -1 }).limit(200).lean();
+  const userIds = rows.map((r) => r.userId);
+  const users = await User.find({ _id: { $in: userIds } }).select("fullName email").lean();
+  const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  res.json({
+    ok: true,
+    records: rows.map((r) => ({
+      id: r._id.toString(),
+      userId: r.userId.toString(),
+      fullName: byId.get(r.userId.toString())?.fullName ?? null,
+      email: byId.get(r.userId.toString())?.email ?? null,
+      type: r.type,
+      title: r.title,
+      status: r.status,
+      coveredByPlatform: r.coveredByPlatform,
+      dueAt: r.dueAt,
+      completedAt: r.completedAt,
+    })),
+  });
+});
+
+/** PATCH /api/admin/maintenance/:id */
+export const updateMaintenance = asyncHandler(async (req, res) => {
+  const row = await MaintenanceRecord.findById(req.params.id);
+  if (!row) throw httpError(404, "Record not found");
+  if (req.body?.status) row.status = req.body.status;
+  if (req.body?.status === "completed") row.completedAt = new Date();
+  if (req.body?.notes != null) row.notes = String(req.body.notes);
+  await row.save();
+  res.json({ ok: true, record: row.toSafeJSON() });
+});
+
+/** GET /api/admin/revenue */
+export const revenue = asyncHandler(async (_req, res) => {
+  const [tripGross, paidOnline, cancelFees, subs, rentalCommission, chauffeurGross] =
+    await Promise.all([
+      Trip.aggregate([
+        { $match: { status: "completed" } },
+        { $group: { _id: null, total: { $sum: "$fareCents" } } },
+      ]),
+      Payment.aggregate([
+        { $match: { status: "succeeded" } },
+        { $group: { _id: null, total: { $sum: "$amountCents" } } },
+      ]),
+      Trip.aggregate([
+        { $match: { status: "cancelled", cancelFeeCents: { $gt: 0 } } },
+        { $group: { _id: null, total: { $sum: "$cancelFeeCents" } } },
+      ]),
+      DriverSubscription.aggregate([
+        { $match: { status: "active" } },
+        { $group: { _id: "$plan", count: { $sum: 1 }, amount: { $sum: "$amountCents" } } },
+      ]),
+      RentalBooking.aggregate([
+        { $match: { paid: true } },
+        { $group: { _id: null, commission: { $sum: "$commissionCents" }, volume: { $sum: "$totalCents" } } },
+      ]),
+      ChauffeurBooking.aggregate([
+        { $match: { paid: true } },
+        { $group: { _id: null, total: { $sum: "$totalCents" } } },
+      ]),
+    ]);
+
+  res.json({
+    ok: true,
+    tripGrossCents: tripGross[0]?.total ?? 0,
+    paidOnlineCents: paidOnline[0]?.total ?? 0,
+    cancelFeeCents: cancelFees[0]?.total ?? 0,
+    subscriptions: subs,
+    rentalCommissionCents: rentalCommission[0]?.commission ?? 0,
+    rentalVolumeCents: rentalCommission[0]?.volume ?? 0,
+    chauffeurGrossCents: chauffeurGross[0]?.total ?? 0,
+  });
+});
+
+/** GET /api/admin/cancellations */
+export const listCancellations = asyncHandler(async (_req, res) => {
+  const trips = await Trip.find({ status: "cancelled" })
+    .sort({ cancelledAt: -1 })
+    .limit(200)
+    .lean();
+  res.json({
+    ok: true,
+    cancellations: trips.map((t) => ({
+      id: t._id.toString(),
+      cancelFeeCents: t.cancelFeeCents ?? 0,
+      refundCents: t.refundCents ?? 0,
+      cancelReason: t.cancelReason,
+      cancelledAt: t.cancelledAt,
+      fareCents: t.fareCents,
+      riderId: t.riderId?.toString() ?? null,
+      driverId: t.driverId?.toString() ?? null,
+    })),
+  });
+});
+
+/** PATCH /api/admin/trips/:id/refund — body: { refundCents } */
+export const refundTrip = asyncHandler(async (req, res) => {
+  const trip = await Trip.findById(req.params.id);
+  if (!trip) throw httpError(404, "Trip not found");
+  const refundCents = Math.max(0, Number(req.body?.refundCents) || 0);
+  trip.refundCents = refundCents;
+  trip.paymentStatus = refundCents >= trip.fareCents ? "refunded" : "partial_refund";
+  await trip.save();
+  await audit(req.user._id, "trip.refund", "Trip", trip._id.toString(), { refundCents });
+  res.json({ ok: true, trip: trip.toSafeJSON() });
+});
+
+/** GET /api/admin/export/users.csv */
+export const exportUsersCsv = asyncHandler(async (_req, res) => {
+  const users = await User.find({ role: { $ne: "admin" } })
+    .sort({ createdAt: -1 })
+    .limit(5000)
+    .select("fullName email phone role isActive createdAt");
+  const lines = ["id,fullName,email,phone,role,isActive,createdAt"];
+  for (const u of users) {
+    lines.push(
+      [
+        u._id.toString(),
+        JSON.stringify(u.fullName || ""),
+        u.email,
+        JSON.stringify(u.phone || ""),
+        u.role,
+        u.isActive,
+        u.createdAt?.toISOString?.() || "",
+      ].join(","),
+    );
+  }
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", "attachment; filename=users.csv");
+  res.send(lines.join("\n"));
+});
+
+/** GET /api/admin/export/drivers.csv */
+export const exportDriversCsv = asyncHandler(async (_req, res) => {
+  const profiles = await DriverProfile.find().sort({ createdAt: -1 }).limit(5000).lean();
+  const users = await User.find({ _id: { $in: profiles.map((p) => p.userId) } })
+    .select("fullName email phone")
+    .lean();
+  const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  const lines = [
+    "userId,fullName,email,phone,vehicleType,plate,verificationStatus,isApproved,createdAt",
+  ];
+  for (const p of profiles) {
+    const u = byId.get(p.userId.toString());
+    lines.push(
+      [
+        p.userId.toString(),
+        JSON.stringify(u?.fullName || ""),
+        u?.email || "",
+        JSON.stringify(u?.phone || ""),
+        p.vehicleType,
+        p.vehiclePlate || "",
+        p.verificationStatus,
+        p.isApproved,
+        p.createdAt?.toISOString?.() || "",
+      ].join(","),
+    );
+  }
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", "attachment; filename=drivers.csv");
+  res.send(lines.join("\n"));
+});
+
+/** GET /api/admin/health */
+export const health = asyncHandler(async (_req, res) => {
+  const started = Date.now();
+  const [users, trips, drivers] = await Promise.all([
+    User.countDocuments(),
+    Trip.countDocuments(),
+    DriverProfile.countDocuments(),
+  ]);
+  res.json({
+    ok: true,
+    latencyMs: Date.now() - started,
+    counts: { users, trips, drivers },
+    time: new Date().toISOString(),
+  });
+});
+
+/** GET /api/admin/audit */
+export const listAudit = asyncHandler(async (_req, res) => {
+  const rows = await AuditLog.find().sort({ createdAt: -1 }).limit(200);
+  res.json({ ok: true, logs: rows.map((r) => r.toSafeJSON()) });
+});
+
+/** PATCH /api/admin/users/:id/active — suspend/reactivate */
+export const setUserActive = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) throw httpError(404, "User not found");
+  if (user.role === "admin") throw httpError(400, "Cannot suspend admin");
+  user.isActive = Boolean(req.body?.isActive);
+  await user.save();
+  await audit(req.user._id, "user.active", "User", user._id.toString(), {
+    isActive: user.isActive,
+  });
+  res.json({
+    ok: true,
+    user: { id: user._id.toString(), isActive: user.isActive, email: user.email },
   });
 });
