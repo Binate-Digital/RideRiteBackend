@@ -24,6 +24,11 @@ async function markTripPaid(trip, { provider, paymentIntentId, paymentMethodType
   trip.paidAt = new Date();
   trip.paymentStatus = "paid";
   if (paymentIntentId) trip.stripePaymentIntentId = paymentIntentId;
+  // Release to driver dispatch only after escrow/payment succeeds
+  if (trip.status === "pending_payment") {
+    trip.status = "requested";
+    trip.requestedAt = trip.requestedAt || new Date();
+  }
   await trip.save();
 
   await Payment.findOneAndUpdate(
@@ -48,6 +53,13 @@ async function markTripPaid(trip, { provider, paymentIntentId, paymentMethodType
     },
     { upsert: true, new: true },
   );
+
+  try {
+    const { notifyEligibleDrivers } = await import("./notifications.controller.js");
+    await notifyEligibleDrivers(trip);
+  } catch {
+    /* non-fatal */
+  }
 
   return trip;
 }

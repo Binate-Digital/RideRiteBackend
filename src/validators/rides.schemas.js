@@ -49,6 +49,8 @@ export const driverVehicleSchema = z.object({
   vehicleModel: z.string().trim().max(60).optional(),
   vehicleColor: z.string().trim().max(40).optional(),
   vehiclePlate: z.string().trim().max(20).optional(),
+  vehicleYear: z.coerce.number().int().min(1990).max(2100).optional().nullable(),
+  vehicleVin: z.string().trim().max(32).optional(),
 });
 
 export const driverLocationSchema = z.object({

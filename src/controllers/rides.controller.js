@@ -29,8 +29,24 @@ export const estimate = asyncHandler(async (req, res) => {
 
 export const book = asyncHandler(async (req, res) => {
   const data = bookRideSchema.parse(req.body);
+  const isOffline = OFFLINE_PAY.has(data.paymentMethod);
 
-  // Block if rider already has an active trip
+  // Resume unpaid card checkout instead of blocking the rider
+  const pendingPay = await Trip.findOne({
+    riderId: req.user._id,
+    status: "pending_payment",
+    paid: false,
+  }).sort({ createdAt: -1 });
+  if (pendingPay && !isOffline) {
+    return res.json({
+      ok: true,
+      message: "Resume payment for your ride.",
+      trip: pendingPay.toSafeJSON(),
+      resumed: true,
+    });
+  }
+
+  // Block only real in-flight trips (already dispatched / matched)
   const active = await Trip.findOne({
     riderId: req.user._id,
     status: { $in: ["requested", "accepted", "en_route", "arrived", "in_progress"] },
@@ -42,11 +58,11 @@ export const book = asyncHandler(async (req, res) => {
   }
 
   const est = buildEstimate(data);
-  const paid = false; // Stripe integration in later phase; offline still unpaid until pickup
-
+  // Card-like: hold as pending_payment until Stripe succeeds, then flip to requested for drivers.
+  // Offline: go straight to requested (pay on pickup).
   const trip = await Trip.create({
     riderId: req.user._id,
-    status: "requested",
+    status: isOffline ? "requested" : "pending_payment",
     vehicleType: data.vehicle,
     pickupAddress: data.pickup,
     destinationAddress: data.destination,
@@ -64,17 +80,29 @@ export const book = asyncHandler(async (req, res) => {
     discountCents: est.discountCents,
     fareCents: est.totalCents,
     paymentMethod: data.paymentMethod,
-    paid,
-    requestedAt: new Date(),
+    paid: false,
+    paymentStatus: isOffline ? "unpaid" : "pending",
+    requestedAt: isOffline ? new Date() : null,
   });
+
+  if (isOffline) {
+    try {
+      const { notifyEligibleDrivers } = await import("./notifications.controller.js");
+      await notifyEligibleDrivers(trip);
+    } catch {
+      /* non-fatal */
+    }
+  }
 
   res.status(201).json({
     ok: true,
-    message: "Ride requested. Waiting for a driver.",
+    message: isOffline
+      ? "Ride requested. Waiting for a driver."
+      : "Complete payment to dispatch your ride to nearby drivers.",
     trip: trip.toSafeJSON(),
-    note: OFFLINE_PAY.has(data.paymentMethod)
+    note: isOffline
       ? "Pay on pickup selected — no upfront charge."
-      : "Card payment capture will plug into Stripe in the payments phase.",
+      : "Drivers are notified only after payment succeeds.",
   });
 });
 
@@ -125,7 +153,7 @@ export const cancel = asyncHandler(async (req, res) => {
   let cancelStatus = "no_charge";
   let message = "";
 
-  if (!trip.paid) {
+  if (trip.status === "pending_payment" || !trip.paid) {
     cancelStatus = "no_charge";
     message = "Ride canceled. No payment was taken.";
   } else if (!driverEnRoute) {
@@ -167,10 +195,15 @@ export const listOpen = asyncHandler(async (req, res) => {
     throw httpError(403, "Active driver subscription required");
   }
 
+  // Only show rides ready for drivers: offline (pay on pickup) or card already paid.
   const trips = await Trip.find({
     status: "requested",
     driverId: null,
     vehicleType: profile.vehicleType,
+    $or: [
+      { paid: true },
+      { paymentMethod: { $in: ["cash", "venmo", "zelle"] } },
+    ],
   })
     .sort({ createdAt: 1 })
     .limit(20);

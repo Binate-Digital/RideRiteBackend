@@ -82,3 +82,31 @@ export async function notifyUser(userId, { category, title, body, data = {} }) {
     return null;
   }
 }
+
+/** Ping online, approved drivers matching the trip vehicle (best-effort inbox alerts). */
+export async function notifyEligibleDrivers(trip) {
+  try {
+    const { DriverProfile } = await import("../models/DriverProfile.js");
+    const drivers = await DriverProfile.find({
+      isOnline: true,
+      isApproved: true,
+      vehicleType: trip.vehicleType,
+    })
+      .select("userId")
+      .limit(40)
+      .lean();
+    const fare = `$${((trip.fareCents || 0) / 100).toFixed(2)}`;
+    await Promise.all(
+      drivers.map((d) =>
+        notifyUser(d.userId, {
+          category: "ride",
+          title: "New ride request nearby",
+          body: `${trip.vehicleType.toUpperCase()} · ${fare} · ${trip.pickupAddress}`,
+          data: { tripId: trip._id.toString(), href: "/driver" },
+        }),
+      ),
+    );
+  } catch {
+    /* non-fatal */
+  }
+}

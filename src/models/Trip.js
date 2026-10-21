@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 
 export const TRIP_STATUSES = [
+  "pending_payment",
   "requested",
   "accepted",
   "en_route",
