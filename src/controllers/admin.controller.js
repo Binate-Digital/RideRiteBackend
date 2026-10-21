@@ -67,26 +67,55 @@ export const analytics = asyncHandler(async (_req, res) => {
   });
 });
 
-/** GET /api/admin/users */
+function parsePaging(req, defaultLimit = 20) {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || defaultLimit));
+  const skip = (page - 1) * limit;
+  return { page, limit, skip };
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function driverStatusOf(p) {
+  if (p.verificationStatus === "approved" && p.isApproved) return "approved";
+  if (p.verificationStatus === "rejected") return "rejected";
+  return "pending";
+}
+
+/** GET /api/admin/users?q=&role=&page=&limit= */
 export const listUsers = asyncHandler(async (req, res) => {
   const q = String(req.query.q || "").trim();
-  const filter = q
-    ? {
-        $or: [
-          { email: { $regex: q, $options: "i" } },
-          { fullName: { $regex: q, $options: "i" } },
-          { phone: { $regex: q, $options: "i" } },
-        ],
-      }
-    : {};
+  const role = String(req.query.role || "all").trim();
+  const { page, limit, skip } = parsePaging(req);
 
-  const users = await User.find(filter)
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .select("fullName email phone role isActive isEmailVerified profileCompleted createdAt lastLoginAt");
+  const filter = {
+    role: { $ne: "admin" },
+  };
+  if (role === "rider" || role === "driver") {
+    filter.role = role;
+  }
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), "i");
+    filter.$or = [{ email: rx }, { fullName: rx }, { phone: rx }];
+  }
+
+  const [total, users] = await Promise.all([
+    User.countDocuments(filter),
+    User.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select("fullName email phone role isActive isEmailVerified profileCompleted createdAt lastLoginAt"),
+  ]);
 
   res.json({
     ok: true,
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
     users: users.map((u) => ({
       id: u._id.toString(),
       fullName: u.fullName,
@@ -102,12 +131,50 @@ export const listUsers = asyncHandler(async (req, res) => {
   });
 });
 
-/** GET /api/admin/drivers */
-export const listDrivers = asyncHandler(async (_req, res) => {
-  const profiles = await DriverProfile.find()
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .lean();
+/** GET /api/admin/drivers?q=&status=&page=&limit= */
+export const listDrivers = asyncHandler(async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const statusFilter = String(req.query.status || "all").trim();
+  const { page, limit, skip } = parsePaging(req);
+
+  const profileFilter = {};
+  if (statusFilter === "approved") {
+    profileFilter.verificationStatus = "approved";
+    profileFilter.isApproved = true;
+  } else if (statusFilter === "rejected") {
+    profileFilter.verificationStatus = "rejected";
+  } else if (statusFilter === "pending") {
+    profileFilter.$or = [
+      { verificationStatus: { $in: ["pending", "incomplete"] } },
+      { verificationStatus: "approved", isApproved: false },
+    ];
+  }
+
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), "i");
+    const matchedUsers = await User.find({
+      $or: [{ email: rx }, { fullName: rx }, { phone: rx }],
+    })
+      .select("_id")
+      .lean();
+    const matchedIds = matchedUsers.map((u) => u._id);
+    profileFilter.$and = [
+      ...(profileFilter.$and || []),
+      {
+        $or: [
+          { userId: { $in: matchedIds } },
+          { vehiclePlate: rx },
+          { vehicleMake: rx },
+          { vehicleModel: rx },
+        ],
+      },
+    ];
+  }
+
+  const [total, profiles] = await Promise.all([
+    DriverProfile.countDocuments(profileFilter),
+    DriverProfile.find(profileFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+  ]);
 
   const userIds = profiles.map((p) => p.userId);
   const users = await User.find({ _id: { $in: userIds } })
@@ -117,15 +184,13 @@ export const listDrivers = asyncHandler(async (_req, res) => {
 
   res.json({
     ok: true,
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
     drivers: profiles.map((p) => {
       const u = byId.get(p.userId.toString());
-      // Approved only after admin review — do not treat legacy isApproved alone as approved
-      const status =
-        p.verificationStatus === "approved" && p.isApproved
-          ? "approved"
-          : p.verificationStatus === "rejected"
-            ? "rejected"
-            : "pending";
+      const status = driverStatusOf(p);
       return {
         id: p._id.toString(),
         userId: p.userId.toString(),
