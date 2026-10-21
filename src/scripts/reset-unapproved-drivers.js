@@ -11,7 +11,7 @@ import { env } from "../config/env.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 
 async function main() {
-  await mongoose.connect(env.mongoUri);
+  await mongoose.connect(env.mongodbUri);
   const result = await DriverProfile.updateMany(
     {
       $or: [
