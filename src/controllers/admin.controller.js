@@ -9,6 +9,8 @@ import { ChauffeurBooking } from "../models/ChauffeurBooking.js";
 import { DriverBonus } from "../models/DriverBonus.js";
 import { MaintenanceRecord } from "../models/MaintenanceRecord.js";
 import { AuditLog } from "../models/AuditLog.js";
+import { PromoCode } from "../models/PromoCode.js";
+import { z } from "zod";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
 
@@ -632,4 +634,48 @@ export const setUserActive = asyncHandler(async (req, res) => {
     ok: true,
     user: { id: user._id.toString(), isActive: user.isActive, email: user.email },
   });
+});
+
+const promoSchema = z
+  .object({
+    code: z.string().trim().min(2).max(40),
+    percentOff: z.number().min(1).max(100).nullable().optional(),
+    amountOffCents: z.number().int().min(1).nullable().optional(),
+    active: z.boolean().optional(),
+    expiresAt: z.coerce.date().nullable().optional(),
+    maxUses: z.number().int().min(1).nullable().optional(),
+  })
+  .refine((d) => Boolean(d.percentOff) !== Boolean(d.amountOffCents), {
+    message: "Set either percentOff or amountOffCents",
+  });
+
+/** GET /api/admin/promos */
+export const listPromos = asyncHandler(async (_req, res) => {
+  const rows = await PromoCode.find().sort({ createdAt: -1 }).limit(200);
+  res.json({ ok: true, promos: rows.map((p) => p.toSafeJSON()) });
+});
+
+/** POST /api/admin/promos */
+export const createPromo = asyncHandler(async (req, res) => {
+  const data = promoSchema.parse(req.body || {});
+  const code = data.code.toUpperCase();
+  if (await PromoCode.exists({ code })) throw httpError(409, "Promo code already exists");
+  const promo = await PromoCode.create({ ...data, code });
+  await audit(req.user._id, "promo.create", "PromoCode", promo._id, { code });
+  res.status(201).json({ ok: true, promo: promo.toSafeJSON() });
+});
+
+/** PATCH /api/admin/promos/:id — body: { active?, expiresAt?, maxUses? } */
+export const updatePromo = asyncHandler(async (req, res) => {
+  const data = z
+    .object({
+      active: z.boolean().optional(),
+      expiresAt: z.coerce.date().nullable().optional(),
+      maxUses: z.number().int().min(1).nullable().optional(),
+    })
+    .parse(req.body || {});
+  const promo = await PromoCode.findByIdAndUpdate(req.params.id, data, { new: true });
+  if (!promo) throw httpError(404, "Promo not found");
+  await audit(req.user._id, "promo.update", "PromoCode", promo._id, data);
+  res.json({ ok: true, promo: promo.toSafeJSON() });
 });

@@ -24,6 +24,12 @@ export const estimateSchema = z.object({
   vehicle: vehicleEnum,
   pickupCoords: coordsSchema,
   destinationCoords: coordsSchema,
+  promoCode: z.string().trim().max(40).optional(),
+});
+
+export const promoValidateSchema = z.object({
+  code: z.string().trim().min(1).max(40),
+  subtotalCents: z.number().int().positive().optional(),
 });
 
 export const bookRideSchema = estimateSchema.extend({

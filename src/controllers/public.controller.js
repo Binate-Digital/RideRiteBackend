@@ -130,3 +130,14 @@ export const nearbyDrivers = asyncHandler(async (req, res) => {
     })),
   });
 });
+
+/** GET /api/public/reverse-geocode?lat=&lng= */
+export const reverseGeocodePoint = asyncHandler(async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    throw httpError(400, "Valid lat and lng are required");
+  }
+  const { reverseGeocode } = await import("../utils/geocode.js");
+  res.json({ ok: true, address: await reverseGeocode(lat, lng) });
+});

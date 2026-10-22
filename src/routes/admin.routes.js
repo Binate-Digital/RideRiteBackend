@@ -38,4 +38,8 @@ router.patch("/bonuses/:id", admin.updateBonus);
 router.get("/maintenance", admin.listMaintenance);
 router.patch("/maintenance/:id", admin.updateMaintenance);
 
+router.get("/promos", admin.listPromos);
+router.post("/promos", admin.createPromo);
+router.patch("/promos/:id", admin.updatePromo);
+
 export default router;

@@ -59,6 +59,7 @@ const tripSchema = new mongoose.Schema(
     serviceFeeCents: { type: Number, required: true },
     taxCents: { type: Number, required: true },
     discountCents: { type: Number, default: 0 },
+    promoCode: { type: String, default: null },
     fareCents: { type: Number, required: true },
     paymentMethod: {
       type: String,
@@ -120,6 +121,7 @@ tripSchema.methods.toSafeJSON = function toSafeJSON() {
       discountCents: this.discountCents,
       totalCents: this.fareCents,
     },
+    promoCode: this.promoCode,
     paymentMethod: this.paymentMethod,
     paid: this.paid,
     paidAt: this.paidAt,

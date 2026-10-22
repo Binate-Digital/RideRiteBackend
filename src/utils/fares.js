@@ -59,7 +59,18 @@ export function computeFare(
   };
 }
 
-export function buildEstimate({ pickup, destination, vehicle, pickupCoords, destinationCoords }) {
+/**
+ * `discountFor(subtotalCents)` (optional) returns the promo discount for the
+ * pre-discount subtotal; computeFare caps it so a ride never drops below $1.
+ */
+export function buildEstimate({
+  pickup,
+  destination,
+  vehicle,
+  pickupCoords,
+  destinationCoords,
+  discountFor,
+}) {
   // Prefer haversine if coords provided; else deterministic mock from addresses
   let distanceMiles;
   let durationMinutes;
@@ -71,7 +82,17 @@ export function buildEstimate({ pickup, destination, vehicle, pickupCoords, dest
     ({ distanceMiles, durationMinutes } = estimateDistanceDuration(pickup, destination));
   }
 
-  const fare = computeFare(vehicle, distanceMiles, durationMinutes);
+  let fare = computeFare(vehicle, distanceMiles, durationMinutes);
+  if (discountFor) {
+    const subtotal = fare.baseFareCents + fare.serviceFeeCents + fare.taxCents;
+    fare = computeFare(
+      vehicle,
+      distanceMiles,
+      durationMinutes,
+      DEFAULT_PRICING,
+      discountFor(subtotal),
+    );
+  }
   return {
     distanceMiles,
     durationMinutes,

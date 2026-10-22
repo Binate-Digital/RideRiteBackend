@@ -21,6 +21,21 @@ export async function geocodeQuery(query) {
   }
 }
 
+/** Best-effort reverse geocode (lat/lng → display address) via Nominatim. */
+export async function reverseGeocode(lat, lng) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=0`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": UA, Accept: "application/json", "Accept-Language": "en" },
+    });
+    if (!res.ok) return "";
+    const json = await res.json();
+    return typeof json?.display_name === "string" ? json.display_name : "";
+  } catch {
+    return "";
+  }
+}
+
 /** Orlando CBD — used when GPS + address geocode both fail (FL demo fallback). */
 export const FL_ORLANDO_FALLBACK = { lat: 28.5383, lng: -81.3792 };
 

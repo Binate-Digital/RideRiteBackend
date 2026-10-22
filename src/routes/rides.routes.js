@@ -18,6 +18,8 @@ const writeLimiter = rateLimit({
 // Public fare estimate (auth optional later; require auth for alpha consistency)
 router.post("/estimate", requireAuth, requireVerified, rides.estimate);
 
+router.post("/promo/validate", requireAuth, requireVerified, writeLimiter, rides.validatePromo);
+
 router.post("/", requireAuth, requireVerified, writeLimiter, rides.book);
 router.get("/", requireAuth, requireVerified, rides.listMine);
 router.get("/open", requireAuth, requireVerified, requireRole("driver", "admin"), rides.listOpen);

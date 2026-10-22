@@ -13,7 +13,9 @@ import {
   cancelRideSchema,
   updateStatusSchema,
   rateRideSchema,
+  promoValidateSchema,
 } from "../validators/rides.schemas.js";
+import { resolvePromo, redeemPromo, discountFor } from "../utils/promos.js";
 import {
   canDriverHandleRides,
   driverReadinessPayload,
@@ -21,10 +23,41 @@ import {
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
 
+/** Resolve an optional promo; a bad code is a 400 so the rider sees why. */
+async function promoForRequest(promoCode) {
+  if (!promoCode) return null;
+  const result = await resolvePromo(promoCode);
+  if (!result.ok) throw httpError(400, result.error, { code: "PROMO_INVALID" });
+  return result;
+}
+
 export const estimate = asyncHandler(async (req, res) => {
   const data = estimateSchema.parse(req.body);
-  const est = buildEstimate(data);
-  res.json({ ok: true, estimate: est });
+  const promo = await promoForRequest(data.promoCode);
+  const est = buildEstimate({
+    ...data,
+    discountFor: promo ? (subtotal) => discountFor(promo.promo, subtotal) : undefined,
+  });
+  res.json({
+    ok: true,
+    estimate: est,
+    promo: promo ? { code: promo.code, label: promo.label } : null,
+  });
+});
+
+/** POST /api/rides/promo/validate — body: { code, subtotalCents? } */
+export const validatePromo = asyncHandler(async (req, res) => {
+  const { code, subtotalCents } = promoValidateSchema.parse(req.body);
+  const result = await resolvePromo(code);
+  if (!result.ok) {
+    return res.json({ ok: false, code: result.code, label: "", discountCents: 0, error: result.error });
+  }
+  res.json({
+    ok: true,
+    code: result.code,
+    label: result.label,
+    discountCents: subtotalCents ? discountFor(result.promo, subtotalCents) : 0,
+  });
 });
 
 export const book = asyncHandler(async (req, res) => {
@@ -82,7 +115,14 @@ export const book = asyncHandler(async (req, res) => {
     );
   }
 
-  const est = buildEstimate(data);
+  const promo = await promoForRequest(data.promoCode);
+  const est = buildEstimate({
+    ...data,
+    discountFor: promo ? (subtotal) => discountFor(promo.promo, subtotal) : undefined,
+  });
+  if (promo && !(await redeemPromo(promo.promo))) {
+    throw httpError(400, "Promo limit reached", { code: "PROMO_INVALID" });
+  }
   // Card-like: hold as pending_payment until Stripe succeeds, then flip to requested for drivers.
   // Offline: go straight to requested (pay on pickup).
   const trip = await Trip.create({
@@ -103,6 +143,7 @@ export const book = asyncHandler(async (req, res) => {
     serviceFeeCents: est.serviceFeeCents,
     taxCents: est.taxCents,
     discountCents: est.discountCents,
+    promoCode: promo ? promo.code : null,
     fareCents: est.totalCents,
     paymentMethod: data.paymentMethod,
     paid: false,
@@ -198,6 +239,22 @@ export const cancel = asyncHandler(async (req, res) => {
   trip.cancelFeeCents = feeCents;
   trip.refundCents = refundCents;
   await trip.save();
+
+  if (trip.driverId) {
+    try {
+      const { notifyUser } = await import("./notifications.controller.js");
+      await notifyUser(trip.driverId, {
+        category: "ride",
+        title: "Rider cancelled the trip",
+        body: trip.cancelReason
+          ? `Reason: ${trip.cancelReason}`
+          : `${trip.pickupAddress} → ${trip.destinationAddress}`,
+        data: { tripId: trip._id.toString(), status: "cancelled", href: "/driver" },
+      });
+    } catch {
+      /* non-fatal */
+    }
+  }
 
   res.json({
     ok: true,
