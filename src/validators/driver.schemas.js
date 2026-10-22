@@ -7,6 +7,9 @@ export const driverVerificationSchema = z.object({
   city: z.string().trim().min(2).max(80).optional(),
   state: z.string().trim().length(2).optional(),
   zip: z.string().trim().min(5).max(10).optional(),
+  /** Map pin for home / signup address */
+  addressLat: z.coerce.number().min(-90).max(90).optional(),
+  addressLng: z.coerce.number().min(-180).max(180).optional(),
   dlNumber: z.string().trim().min(4).max(40).optional(),
   dlState: z.string().trim().length(2).optional(),
   dlExpiresOn: z.string().trim().min(4).max(32).optional(),
@@ -18,7 +21,7 @@ export const driverVerificationSchema = z.object({
   vehicleColor: z.string().trim().max(40).optional(),
   vehiclePlate: z.string().trim().min(2).max(20).optional(),
   vehicleYear: z.coerce.number().int().min(1990).max(2050).optional(),
-  vehicleVin: z.string().trim().length(17).optional(),
+  vehicleVin: z.string().trim().min(11).max(17).optional(),
   insuranceCarrier: z.string().trim().min(2).max(80).optional(),
   insurancePolicyNumber: z.string().trim().min(2).max(60).optional(),
   insuranceExpiresOn: z.string().trim().min(4).max(32).optional(),

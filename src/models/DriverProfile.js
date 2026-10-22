@@ -53,6 +53,13 @@ const driverProfileSchema = new mongoose.Schema(
     stripeConnectChargesEnabled: { type: Boolean, default: false },
     stripeConnectPayoutsEnabled: { type: Boolean, default: false },
     stripeConnectDetailsSubmitted: { type: Boolean, default: false },
+    /** Home / signup address pin (from location picker) */
+    homeLocation: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      updatedAt: { type: Date, default: null },
+    },
+    /** Live GPS while online / dispatch */
     lastLocation: {
       lat: { type: Number, default: null },
       lng: { type: Number, default: null },
@@ -95,6 +102,7 @@ driverProfileSchema.methods.toSafeJSON = function toSafeJSON() {
     stripeConnectChargesEnabled: this.stripeConnectChargesEnabled,
     stripeConnectPayoutsEnabled: this.stripeConnectPayoutsEnabled,
     stripeConnectDetailsSubmitted: this.stripeConnectDetailsSubmitted,
+    homeLocation: this.homeLocation,
     lastLocation: this.lastLocation,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,

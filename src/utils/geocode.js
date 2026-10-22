@@ -25,7 +25,8 @@ export async function geocodeQuery(query) {
 export const FL_ORLANDO_FALLBACK = { lat: 28.5383, lng: -81.3792 };
 
 /**
- * Resolve a driver pin: explicit coords → profile address geocode → Orlando fallback for FL.
+ * Resolve a driver pin:
+ * explicit GPS → saved homeLocation → lastLocation → address geocode → Orlando FL fallback.
  */
 export async function resolveDriverHomeBase(profile, explicit) {
   if (
@@ -34,6 +35,32 @@ export async function resolveDriverHomeBase(profile, explicit) {
     Number.isFinite(explicit.lng)
   ) {
     return { lat: explicit.lat, lng: explicit.lng, source: "gps" };
+  }
+
+  if (
+    profile.homeLocation?.lat != null &&
+    profile.homeLocation?.lng != null &&
+    Number.isFinite(profile.homeLocation.lat) &&
+    Number.isFinite(profile.homeLocation.lng)
+  ) {
+    return {
+      lat: profile.homeLocation.lat,
+      lng: profile.homeLocation.lng,
+      source: "home",
+    };
+  }
+
+  if (
+    profile.lastLocation?.lat != null &&
+    profile.lastLocation?.lng != null &&
+    Number.isFinite(profile.lastLocation.lat) &&
+    Number.isFinite(profile.lastLocation.lng)
+  ) {
+    return {
+      lat: profile.lastLocation.lat,
+      lng: profile.lastLocation.lng,
+      source: "last",
+    };
   }
 
   const parts = [

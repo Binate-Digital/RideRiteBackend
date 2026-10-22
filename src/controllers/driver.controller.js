@@ -59,9 +59,28 @@ export const updateVerification = asyncHandler(async (req, res) => {
   const data = driverVerificationSchema.parse(req.body);
   const profile = await getOrCreateProfile(req.user);
 
-  const { skipForLater, ...fields } = data;
+  const { skipForLater, addressLat, addressLng, ...fields } = data;
   for (const [key, value] of Object.entries(fields)) {
     if (value !== undefined) profile[key] = value;
+  }
+
+  // Persist map pin from address picker → homeLocation + lastLocation (so nearby search works)
+  if (Number.isFinite(addressLat) && Number.isFinite(addressLng)) {
+    const pin = { lat: addressLat, lng: addressLng, updatedAt: new Date() };
+    profile.homeLocation = pin;
+    profile.lastLocation = pin;
+  } else if (
+    (fields.addressLine1 || fields.city || fields.zip) &&
+    !(profile.homeLocation?.lat != null && profile.homeLocation?.lng != null)
+  ) {
+    // Text address changed without coords — geocode once
+    const { resolveDriverHomeBase } = await import("../utils/geocode.js");
+    const resolved = await resolveDriverHomeBase(profile, null);
+    if (resolved) {
+      const pin = { lat: resolved.lat, lng: resolved.lng, updatedAt: new Date() };
+      profile.homeLocation = pin;
+      if (profile.lastLocation?.lat == null) profile.lastLocation = pin;
+    }
   }
 
   if (skipForLater) {
@@ -90,6 +109,7 @@ export const updateVerification = asyncHandler(async (req, res) => {
   const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   res.json({
     ok: true,
+    user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
   });
