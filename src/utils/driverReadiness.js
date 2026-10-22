@@ -1,3 +1,9 @@
+/**
+ * Connect account ids given to seeded QA drivers (src/scripts/seed-test-accounts.js).
+ * They have no real Stripe account, so never look them up in Stripe.
+ */
+export const SEEDED_CONNECT_ACCOUNT_PREFIX = "acct_seedtest_";
+
 /** Core license docs needed to submit KYC for admin review. */
 function hasCoreLicenseDocs(profile) {
   return Boolean(

@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "seed:demo": "node src/scripts/seed-demo.js"
+    "seed:test-accounts": "node src/scripts/seed-test-accounts.js"
   },
   "engines": {
     "node": ">=18"

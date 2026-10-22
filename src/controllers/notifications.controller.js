@@ -83,10 +83,9 @@ export async function notifyUser(userId, { category, title, body, data = {} }) {
   }
 }
 
-/** Ping online, approved drivers matching the trip vehicle (prefer within 100mi of pickup). */
+/** Ping drivers who can take this trip right now (matching vehicle, within 100 mi of pickup). */
 export async function notifyEligibleDrivers(trip) {
   try {
-    const { DriverProfile } = await import("../models/DriverProfile.js");
     const { findNearbyOnlineDrivers } = await import("../utils/nearbyDrivers.js");
     const fare = `$${((trip.fareCents || 0) / 100).toFixed(2)}`;
     const pickup = trip.pickupCoords;
@@ -100,19 +99,6 @@ export async function notifyEligibleDrivers(trip) {
         vehicleType: trip.vehicleType,
         limit: 40,
       });
-    }
-
-    // Fallback: any online matching vehicle (no GPS yet) so dispatch still rings
-    if (targets.length === 0) {
-      const rows = await DriverProfile.find({
-        isOnline: true,
-        isApproved: true,
-        vehicleType: trip.vehicleType,
-      })
-        .select("userId")
-        .limit(40)
-        .lean();
-      targets = rows.map((d) => ({ userId: d.userId }));
     }
 
     await Promise.all(

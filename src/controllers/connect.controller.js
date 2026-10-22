@@ -3,6 +3,7 @@ import { httpError } from "../middleware/errorHandler.js";
 import { getStripe, isStripeMock } from "../lib/stripe.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { env } from "../config/env.js";
+import { SEEDED_CONNECT_ACCOUNT_PREFIX } from "../utils/driverReadiness.js";
 
 async function ensureDriverProfile(user) {
   let profile = await DriverProfile.findOne({ userId: user._id });
@@ -22,6 +23,7 @@ async function ensureDriverProfile(user) {
 
 async function syncConnectFlags(profile) {
   if (!profile.stripeConnectAccountId || isStripeMock()) return profile;
+  if (profile.stripeConnectAccountId.startsWith(SEEDED_CONNECT_ACCOUNT_PREFIX)) return profile;
   const stripe = getStripe();
   const account = await stripe.accounts.retrieve(profile.stripeConnectAccountId);
   profile.stripeConnectChargesEnabled = Boolean(account.charges_enabled);

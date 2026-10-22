@@ -2,7 +2,7 @@ import { Trip } from "../models/Trip.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
-import { findNearbyOnlineDrivers } from "../utils/nearbyDrivers.js";
+import { findNearbyOnlineDrivers, etaMinutesForMiles } from "../utils/nearbyDrivers.js";
 
 /** GET /api/public/trips/:id/track — shareable live trip status (no auth) */
 export const trackTrip = asyncHandler(async (req, res) => {
@@ -79,20 +79,26 @@ export const nearbyTiers = asyncHandler(async (req, res) => {
     throw httpError(400, "lat and lng required");
   }
 
-  const nearby = await findNearbyOnlineDrivers({ lat, lng, radiusMiles, limit: 200 });
-  const counts = { sedan: 0, suv: 0, truck: 0 };
+  const nearby = await findNearbyOnlineDrivers({ lat, lng, radiusMiles, limit: 500 });
+  const tiers = { sedan: [], suv: [], truck: [] };
   for (const d of nearby) {
-    if (counts[d.vehicleType] != null) counts[d.vehicleType] += 1;
+    if (tiers[d.vehicleType]) tiers[d.vehicleType].push(d.distanceMiles);
   }
 
   res.json({
     ok: true,
     radiusMiles,
-    tiers: Object.entries(counts).map(([vehicleType, availableDrivers]) => ({
-      vehicleType,
-      available: availableDrivers > 0,
-      availableDrivers,
-    })),
+    tiers: Object.entries(tiers).map(([vehicleType, distances]) => {
+      // `nearby` is sorted nearest-first, so distances[0] is the closest driver
+      const nearestMiles = distances.length ? Math.round(distances[0] * 10) / 10 : null;
+      return {
+        vehicleType,
+        available: distances.length > 0,
+        availableDrivers: distances.length,
+        nearestMiles,
+        etaMinutes: nearestMiles == null ? null : etaMinutesForMiles(nearestMiles),
+      };
+    }),
   });
 });
 
@@ -121,12 +127,14 @@ export const nearbyDrivers = asyncHandler(async (req, res) => {
     radiusMiles,
     count: nearby.length,
     drivers: nearby.map((d) => ({
+      id: d.id,
       lat: d.lat,
       lng: d.lng,
       vehicleType: d.vehicleType,
+      vehicleLabel: d.vehicleLabel,
       distanceMiles: Math.round(d.distanceMiles * 10) / 10,
+      etaMinutes: etaMinutesForMiles(d.distanceMiles),
       updatedAt: d.updatedAt,
-      locationUnknown: Boolean(d.locationUnknown),
     })),
   });
 });

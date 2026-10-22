@@ -22,6 +22,8 @@ import {
 } from "../utils/driverReadiness.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
+/** How far from the pickup a driver may be to see / be offered a request. */
+const DISPATCH_RADIUS_MILES = 100;
 
 /** Resolve an optional promo; a bad code is a 400 so the rider sees why. */
 async function promoForRequest(promoCode) {
@@ -103,7 +105,7 @@ export const book = asyncHandler(async (req, res) => {
   const nearby = await findNearbyOnlineDrivers({
     lat: pickupLat,
     lng: pickupLng,
-    radiusMiles: 100,
+    radiusMiles: DISPATCH_RADIUS_MILES,
     vehicleType: data.vehicle,
     limit: 20,
   });
@@ -288,11 +290,28 @@ export const listOpen = asyncHandler(async (req, res) => {
     ],
   })
     .sort({ createdAt: 1 })
-    .limit(20);
+    .limit(100);
+
+  // Same radius riders are matched within — a driver only sees pickups near them,
+  // nearest first. Without a location we can't judge distance, so show none.
+  const here = profile.lastLocation;
+  const { haversineMiles } = await import("../utils/nearbyDrivers.js");
+  const nearby =
+    here?.lat == null || here?.lng == null
+      ? []
+      : trips
+          .filter((t) => t.pickupCoords?.lat != null && t.pickupCoords?.lng != null)
+          .map((t) => ({ t, miles: haversineMiles(here, t.pickupCoords) }))
+          .filter((x) => x.miles <= DISPATCH_RADIUS_MILES)
+          .sort((a, b) => a.miles - b.miles)
+          .slice(0, 20);
 
   res.json({
     ok: true,
-    trips: trips.map((t) => t.toSafeJSON()),
+    trips: nearby.map(({ t, miles }) => ({
+      ...t.toSafeJSON(),
+      pickupDistanceMiles: Math.round(miles * 10) / 10,
+    })),
   });
 });
 
@@ -363,10 +382,12 @@ export const reject = asyncHandler(async (req, res) => {
   if (!profile?.isApproved) {
     throw httpError(403, "Driver not approved yet");
   }
-  if (!canDriverHandleRides(profile)) {
+  const { driverHasActiveSubscription } = await import("./subscriptions.controller.js");
+  const subscriptionActive = await driverHasActiveSubscription(req.user._id);
+  if (!canDriverHandleRides(profile, { subscriptionActive })) {
     throw httpError(
       403,
-      driverReadinessPayload(profile).blockReason ||
+      driverReadinessPayload(profile, { subscriptionActive }).blockReason ||
         "Complete Stripe Connect and driver verification before handling rides",
     );
   }
