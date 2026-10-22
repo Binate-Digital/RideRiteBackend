@@ -83,26 +83,49 @@ export async function notifyUser(userId, { category, title, body, data = {} }) {
   }
 }
 
-/** Ping online, approved drivers matching the trip vehicle (best-effort inbox alerts). */
+/** Ping online, approved drivers matching the trip vehicle (prefer within 10mi of pickup). */
 export async function notifyEligibleDrivers(trip) {
   try {
     const { DriverProfile } = await import("../models/DriverProfile.js");
-    const drivers = await DriverProfile.find({
-      isOnline: true,
-      isApproved: true,
-      vehicleType: trip.vehicleType,
-    })
-      .select("userId")
-      .limit(40)
-      .lean();
+    const { findNearbyOnlineDrivers } = await import("../utils/nearbyDrivers.js");
     const fare = `$${((trip.fareCents || 0) / 100).toFixed(2)}`;
+    const pickup = trip.pickupCoords;
+    let targets = [];
+
+    if (pickup?.lat != null && pickup?.lng != null) {
+      targets = await findNearbyOnlineDrivers({
+        lat: pickup.lat,
+        lng: pickup.lng,
+        radiusMiles: 10,
+        vehicleType: trip.vehicleType,
+        limit: 40,
+      });
+    }
+
+    // Fallback: any online matching vehicle (no GPS yet) so dispatch still rings
+    if (targets.length === 0) {
+      const rows = await DriverProfile.find({
+        isOnline: true,
+        isApproved: true,
+        vehicleType: trip.vehicleType,
+      })
+        .select("userId")
+        .limit(40)
+        .lean();
+      targets = rows.map((d) => ({ userId: d.userId }));
+    }
+
     await Promise.all(
-      drivers.map((d) =>
+      targets.map((d) =>
         notifyUser(d.userId, {
           category: "ride",
           title: "New ride request nearby",
           body: `${trip.vehicleType.toUpperCase()} · ${fare} · ${trip.pickupAddress}`,
-          data: { tripId: trip._id.toString(), href: "/driver" },
+          data: {
+            tripId: trip._id.toString(),
+            href: "/driver",
+            dispatch: true,
+          },
         }),
       ),
     );

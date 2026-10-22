@@ -4,5 +4,6 @@ import * as pub from "../controllers/public.controller.js";
 const router = Router();
 router.get("/trips/:id/track", pub.trackTrip);
 router.get("/nearby-tiers", pub.nearbyTiers);
+router.get("/nearby-drivers", pub.nearbyDrivers);
 
 export default router;

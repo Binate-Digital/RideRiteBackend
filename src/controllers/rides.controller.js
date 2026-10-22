@@ -57,6 +57,31 @@ export const book = asyncHandler(async (req, res) => {
     });
   }
 
+  const pickupLat = data.pickupCoords?.lat;
+  const pickupLng = data.pickupCoords?.lng;
+  if (pickupLat == null || pickupLng == null) {
+    throw httpError(
+      400,
+      "Set a map pickup pin (or choose an address with coordinates) so we can find nearby drivers.",
+    );
+  }
+
+  const { findNearbyOnlineDrivers } = await import("../utils/nearbyDrivers.js");
+  const nearby = await findNearbyOnlineDrivers({
+    lat: pickupLat,
+    lng: pickupLng,
+    radiusMiles: 10,
+    vehicleType: data.vehicle,
+    limit: 20,
+  });
+  if (nearby.length === 0) {
+    throw httpError(
+      409,
+      `No online ${data.vehicle} drivers within 10 miles of your pickup. Try another vehicle or wait until a driver comes online.`,
+      { code: "NO_NEARBY_DRIVERS" },
+    );
+  }
+
   const est = buildEstimate(data);
   // Card-like: hold as pending_payment until Stripe succeeds, then flip to requested for drivers.
   // Offline: go straight to requested (pay on pickup).

@@ -2,6 +2,7 @@ import { Trip } from "../models/Trip.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
+import { findNearbyOnlineDrivers } from "../utils/nearbyDrivers.js";
 
 /** GET /api/public/trips/:id/track — shareable live trip status (no auth) */
 export const trackTrip = asyncHandler(async (req, res) => {
@@ -69,47 +70,19 @@ export const trackTrip = asyncHandler(async (req, res) => {
   });
 });
 
-function haversineMiles(a, b) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const R = 3958.8;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
 /** GET /api/public/nearby-tiers?lat=&lng=&radiusMiles= */
 export const nearbyTiers = asyncHandler(async (req, res) => {
   const lat = Number(req.query.lat);
   const lng = Number(req.query.lng);
-  const radiusMiles = Math.min(50, Math.max(1, Number(req.query.radiusMiles) || 15));
+  const radiusMiles = Math.min(50, Math.max(1, Number(req.query.radiusMiles) || 10));
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     throw httpError(400, "lat and lng required");
   }
 
-  const drivers = await DriverProfile.find({
-    isOnline: true,
-    isApproved: true,
-    "lastLocation.lat": { $ne: null },
-    "lastLocation.lng": { $ne: null },
-  })
-    .select("vehicleType lastLocation")
-    .limit(200)
-    .lean();
-
+  const nearby = await findNearbyOnlineDrivers({ lat, lng, radiusMiles, limit: 200 });
   const counts = { sedan: 0, suv: 0, truck: 0 };
-  for (const d of drivers) {
-    const dist = haversineMiles(
-      { lat, lng },
-      { lat: d.lastLocation.lat, lng: d.lastLocation.lng },
-    );
-    if (dist <= radiusMiles && counts[d.vehicleType] != null) {
-      counts[d.vehicleType] += 1;
-    }
+  for (const d of nearby) {
+    if (counts[d.vehicleType] != null) counts[d.vehicleType] += 1;
   }
 
   res.json({
@@ -119,6 +92,40 @@ export const nearbyTiers = asyncHandler(async (req, res) => {
       vehicleType,
       available: availableDrivers > 0,
       availableDrivers,
+    })),
+  });
+});
+
+/** GET /api/public/nearby-drivers?lat=&lng=&radiusMiles=10&vehicleType= */
+export const nearbyDrivers = asyncHandler(async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const radiusMiles = Math.min(50, Math.max(1, Number(req.query.radiusMiles) || 10));
+  const vehicleType = req.query.vehicleType
+    ? String(req.query.vehicleType).toLowerCase()
+    : null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw httpError(400, "lat and lng required");
+  }
+
+  const nearby = await findNearbyOnlineDrivers({
+    lat,
+    lng,
+    radiusMiles,
+    vehicleType: vehicleType && ["sedan", "suv", "truck"].includes(vehicleType) ? vehicleType : null,
+    limit: 80,
+  });
+
+  res.json({
+    ok: true,
+    radiusMiles,
+    count: nearby.length,
+    drivers: nearby.map((d) => ({
+      lat: d.lat,
+      lng: d.lng,
+      vehicleType: d.vehicleType,
+      distanceMiles: Math.round(d.distanceMiles * 10) / 10,
+      updatedAt: d.updatedAt,
     })),
   });
 });
