@@ -1,26 +1,24 @@
-/** Minimum docs/fields required before a driver can accept/reject rides. */
+/** Core license docs needed to submit KYC for admin review. */
+function hasCoreLicenseDocs(profile) {
+  return Boolean(
+    profile?.licenseFrontUrl &&
+      profile?.licenseBackUrl &&
+      profile?.dlNumber,
+  );
+}
+
+/**
+ * Verification gate for ride actions.
+ * Once admin approves KYC (`isApproved` / verificationStatus=approved),
+ * treat docs as complete — do not re-block on every optional profile field.
+ * Before approval, require license front/back + DL number (what onboarding collects).
+ */
 export function isDriverVerificationComplete(profile) {
   if (!profile) return false;
-  return Boolean(
-    profile.licenseFrontUrl &&
-      profile.licenseBackUrl &&
-      profile.dlNumber &&
-      profile.dlState &&
-      profile.dlExpiresOn &&
-      profile.dateOfBirth &&
-      profile.addressLine1 &&
-      profile.city &&
-      profile.state &&
-      profile.zip &&
-      profile.vehicleMake &&
-      profile.vehicleModel &&
-      profile.vehicleYear &&
-      profile.vehiclePlate &&
-      profile.vehicleVin &&
-      profile.insuranceCarrier &&
-      profile.insurancePolicyNumber &&
-      profile.insuranceExpiresOn,
-  );
+  if (profile.isApproved || profile.verificationStatus === "approved") {
+    return true;
+  }
+  return hasCoreLicenseDocs(profile);
 }
 
 export function isStripeConnectReady(profile) {
@@ -47,13 +45,16 @@ export function driverReadinessPayload(profile, { subscriptionActive = false } =
   const connectReady = isStripeConnectReady(profile);
   const canHandleRides = canDriverHandleRides(profile, { subscriptionActive });
   let blockReason = null;
-  if (!profile?.isApproved) blockReason = "Driver account pending admin approval";
-  else if (!subscriptionActive) {
-    blockReason = "Active driver subscription required ($100/mo or $32/wk)";
+  if (!profile?.isApproved) {
+    blockReason = hasCoreLicenseDocs(profile)
+      ? "Driver account pending admin approval"
+      : "Upload your license and verification documents before accepting rides";
+  } else if (!subscriptionActive) {
+    blockReason = "Active driver subscription required ($100/mo or $32/wk) — finish it in Billing";
   } else if (!connectReady) {
     blockReason = "Complete Stripe Connect onboarding to receive payouts";
   } else if (!verificationComplete) {
-    blockReason = "Upload driver license and verification documents to accept rides";
+    blockReason = "Upload your license and verification documents before accepting rides";
   }
   return {
     verificationComplete,
