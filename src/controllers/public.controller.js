@@ -126,6 +126,7 @@ export const nearbyDrivers = asyncHandler(async (req, res) => {
       vehicleType: d.vehicleType,
       distanceMiles: Math.round(d.distanceMiles * 10) / 10,
       updatedAt: d.updatedAt,
+      locationUnknown: Boolean(d.locationUnknown),
     })),
   });
 });

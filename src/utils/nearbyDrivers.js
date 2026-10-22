@@ -13,9 +13,22 @@ export function haversineMiles(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+/** Stable tiny offset so unknown-GPS drivers don't stack on one pixel. */
+function offsetFromId(id, index) {
+  const s = String(id || index);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  const angle = (h % 360) * (Math.PI / 180);
+  const meters = 80 + (h % 120);
+  const dLat = (meters * Math.cos(angle)) / 111_320;
+  const dLng = (meters * Math.sin(angle)) / (111_320 * Math.cos((28.5 * Math.PI) / 180));
+  return { dLat, dLng };
+}
+
 /**
- * Online + approved drivers with a fresh-ish GPS fix inside radiusMiles.
- * Optionally filter by vehicleType.
+ * Online + approved drivers inside radiusMiles.
+ * Drivers without lastLocation still count (placed near the search point)
+ * so GPS permission failures don't hide available drivers from booking.
  */
 export async function findNearbyOnlineDrivers({
   lat,
@@ -29,8 +42,6 @@ export async function findNearbyOnlineDrivers({
   const filter = {
     isOnline: true,
     isApproved: true,
-    "lastLocation.lat": { $ne: null },
-    "lastLocation.lng": { $ne: null },
   };
   if (vehicleType) filter.vehicleType = vehicleType;
 
@@ -39,22 +50,47 @@ export async function findNearbyOnlineDrivers({
     .limit(300)
     .lean();
 
-  return drivers
-    .map((d) => {
+  const results = [];
+  let unknownIdx = 0;
+
+  for (const d of drivers) {
+    const hasGps =
+      d.lastLocation?.lat != null &&
+      d.lastLocation?.lng != null &&
+      Number.isFinite(d.lastLocation.lat) &&
+      Number.isFinite(d.lastLocation.lng);
+
+    if (hasGps) {
       const distanceMiles = haversineMiles(
         { lat, lng },
         { lat: d.lastLocation.lat, lng: d.lastLocation.lng },
       );
-      return {
+      if (distanceMiles > radiusMiles) continue;
+      results.push({
         userId: d.userId,
         vehicleType: d.vehicleType,
         lat: d.lastLocation.lat,
         lng: d.lastLocation.lng,
         updatedAt: d.lastLocation.updatedAt ?? null,
         distanceMiles,
-      };
-    })
-    .filter((d) => d.distanceMiles <= radiusMiles)
+        locationUnknown: false,
+      });
+    } else {
+      // No GPS yet — still bookable; show near the rider pickup
+      const { dLat, dLng } = offsetFromId(d.userId, unknownIdx++);
+      results.push({
+        userId: d.userId,
+        vehicleType: d.vehicleType,
+        lat: lat + dLat,
+        lng: lng + dLng,
+        updatedAt: null,
+        distanceMiles: 0,
+        locationUnknown: true,
+      });
+    }
+  }
+
+  return results
     .sort((a, b) => a.distanceMiles - b.distanceMiles)
     .slice(0, limit);
 }
