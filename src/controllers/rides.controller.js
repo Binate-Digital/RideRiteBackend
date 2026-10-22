@@ -257,6 +257,18 @@ export const accept = asyncHandler(async (req, res) => {
     throw httpError(409, "Trip not available (already taken or wrong vehicle type)");
   }
 
+  try {
+    const { notifyUser } = await import("./notifications.controller.js");
+    await notifyUser(trip.riderId, {
+      category: "ride",
+      title: "Driver assigned",
+      body: "Your driver accepted the ride and is heading your way.",
+      data: { tripId: trip._id.toString(), status: "accepted", href: `/book?trip_id=${trip._id}` },
+    });
+  } catch {
+    /* non-fatal */
+  }
+
   res.json({
     ok: true,
     message: "Ride accepted",
@@ -329,6 +341,39 @@ export const updateStatus = asyncHandler(async (req, res) => {
   }
 
   await trip.save();
+
+  try {
+    const { notifyUser } = await import("./notifications.controller.js");
+    const STATUS_COPY = {
+      en_route: {
+        title: "Driver en route",
+        body: "Your driver is on the way to the pickup location.",
+      },
+      arrived: {
+        title: "Driver arrived",
+        body: "Your driver has arrived at the pickup location.",
+      },
+      in_progress: {
+        title: "Trip started",
+        body: "Your ride is in progress. Enjoy the trip!",
+      },
+      completed: {
+        title: "Trip completed",
+        body: "You've arrived. Thanks for riding with RideRite!",
+      },
+    };
+    const copy = STATUS_COPY[status];
+    if (copy) {
+      await notifyUser(trip.riderId, {
+        category: "ride",
+        title: copy.title,
+        body: copy.body,
+        data: { tripId: trip._id.toString(), status, href: `/book?trip_id=${trip._id}` },
+      });
+    }
+  } catch {
+    /* non-fatal */
+  }
 
   res.json({
     ok: true,

@@ -41,5 +41,28 @@ export const sendMessage = asyncHandler(async (req, res) => {
     senderId: req.user._id,
     body,
   });
+
+  try {
+    const { notifyUser } = await import("./notifications.controller.js");
+    const uid = req.user._id.toString();
+    const recipientId =
+      trip.riderId.toString() === uid ? trip.driverId : trip.riderId;
+    if (recipientId) {
+      const fromDriver = trip.driverId && trip.driverId.toString() === uid;
+      await notifyUser(recipientId, {
+        category: "ride",
+        title: fromDriver ? "Message from your driver" : "Message from your rider",
+        body: body.length > 120 ? `${body.slice(0, 117)}…` : body,
+        data: {
+          tripId: trip._id.toString(),
+          href: fromDriver ? `/book?trip_id=${trip._id}` : "/driver",
+          chat: true,
+        },
+      });
+    }
+  } catch {
+    /* non-fatal */
+  }
+
   res.status(201).json({ ok: true, message: row.toSafeJSON() });
 });
