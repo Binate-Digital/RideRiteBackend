@@ -83,7 +83,7 @@ export async function notifyUser(userId, { category, title, body, data = {} }) {
   }
 }
 
-/** Ping online, approved drivers matching the trip vehicle (prefer within 10mi of pickup). */
+/** Ping online, approved drivers matching the trip vehicle (prefer within 100mi of pickup). */
 export async function notifyEligibleDrivers(trip) {
   try {
     const { DriverProfile } = await import("../models/DriverProfile.js");
@@ -96,7 +96,7 @@ export async function notifyEligibleDrivers(trip) {
       targets = await findNearbyOnlineDrivers({
         lat: pickup.lat,
         lng: pickup.lng,
-        radiusMiles: 10,
+        radiusMiles: 100,
         vehicleType: trip.vehicleType,
         limit: 40,
       });

@@ -20,7 +20,7 @@ export function haversineMiles(a, b) {
 export async function findNearbyOnlineDrivers({
   lat,
   lng,
-  radiusMiles = 10,
+  radiusMiles = 100,
   vehicleType = null,
   limit = 100,
 } = {}) {

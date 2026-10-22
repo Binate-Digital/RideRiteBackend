@@ -70,14 +70,14 @@ export const book = asyncHandler(async (req, res) => {
   const nearby = await findNearbyOnlineDrivers({
     lat: pickupLat,
     lng: pickupLng,
-    radiusMiles: 10,
+    radiusMiles: 100,
     vehicleType: data.vehicle,
     limit: 20,
   });
   if (nearby.length === 0) {
     throw httpError(
       409,
-      `No online ${data.vehicle} drivers within 10 miles of your pickup. Try another vehicle or wait until a driver comes online.`,
+      `No online ${data.vehicle} drivers within 100 miles of your pickup. Try another vehicle or wait until a driver comes online.`,
       { code: "NO_NEARBY_DRIVERS" },
     );
   }

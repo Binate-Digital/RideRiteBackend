@@ -74,7 +74,7 @@ export const trackTrip = asyncHandler(async (req, res) => {
 export const nearbyTiers = asyncHandler(async (req, res) => {
   const lat = Number(req.query.lat);
   const lng = Number(req.query.lng);
-  const radiusMiles = Math.min(50, Math.max(1, Number(req.query.radiusMiles) || 10));
+  const radiusMiles = Math.min(150, Math.max(1, Number(req.query.radiusMiles) || 100));
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     throw httpError(400, "lat and lng required");
   }
@@ -96,11 +96,11 @@ export const nearbyTiers = asyncHandler(async (req, res) => {
   });
 });
 
-/** GET /api/public/nearby-drivers?lat=&lng=&radiusMiles=10&vehicleType= */
+/** GET /api/public/nearby-drivers?lat=&lng=&radiusMiles=100&vehicleType= */
 export const nearbyDrivers = asyncHandler(async (req, res) => {
   const lat = Number(req.query.lat);
   const lng = Number(req.query.lng);
-  const radiusMiles = Math.min(50, Math.max(1, Number(req.query.radiusMiles) || 10));
+  const radiusMiles = Math.min(150, Math.max(1, Number(req.query.radiusMiles) || 100));
   const vehicleType = req.query.vehicleType
     ? String(req.query.vehicleType).toLowerCase()
     : null;
