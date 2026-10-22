@@ -121,14 +121,29 @@ export const goOnline = asyncHandler(async (req, res) => {
     );
   }
   profile.isOnline = true;
-  // Persist GPS on go-online (location lives on DriverProfile, not User)
-  const lat = Number(req.body?.lat);
-  const lng = Number(req.body?.lng);
-  if (Number.isFinite(lat) && Number.isFinite(lng)) {
-    profile.lastLocation = { lat, lng, updatedAt: new Date() };
+  // Location lives on DriverProfile.lastLocation (NOT User / NOT savedAddresses).
+  // Always set a pin so riders can see this driver in nearby search.
+  const bodyLat = Number(req.body?.lat);
+  const bodyLng = Number(req.body?.lng);
+  const { resolveDriverHomeBase } = await import("../utils/geocode.js");
+  const resolved = await resolveDriverHomeBase(profile, {
+    lat: bodyLat,
+    lng: bodyLng,
+  });
+  if (resolved) {
+    profile.lastLocation = {
+      lat: resolved.lat,
+      lng: resolved.lng,
+      updatedAt: new Date(),
+    };
   }
   await profile.save();
-  res.json({ ok: true, message: "You are online", driver: profile.toSafeJSON() });
+  res.json({
+    ok: true,
+    message: "You are online",
+    driver: profile.toSafeJSON(),
+    locationSource: resolved?.source || null,
+  });
 });
 
 export const goOffline = asyncHandler(async (req, res) => {
