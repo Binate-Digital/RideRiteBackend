@@ -133,11 +133,16 @@ export const subscribe = asyncHandler(async (req, res) => {
     expand: ["latest_invoice.payment_intent"],
     metadata: { userId: req.user._id.toString(), plan: plan.id, purpose: "subscription", app: "riderite" },
   });
-  // Abandon the previous unfinished attempt (if any) so it can't be paid later
-  if (current?.stripeSubscriptionId && current.status === "incomplete") {
+  // Point our record at the new subscription first, so the old one's deletion webhook is ignored
+  const sub = await applyStripeSubscription(stripeSub);
+  // Abandon the previous unfinished / failed one so it can't be charged later
+  if (
+    current?.stripeSubscriptionId &&
+    current.stripeSubscriptionId !== stripeSub.id &&
+    ["incomplete", "past_due"].includes(current.status)
+  ) {
     await stripe.subscriptions.cancel(current.stripeSubscriptionId).catch(() => {});
   }
-  const sub = await applyStripeSubscription(stripeSub);
   const clientSecret = invoiceClientSecret(stripeSub.latest_invoice);
 
   res.status(201).json({
