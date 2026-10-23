@@ -1,5 +1,8 @@
 // RideRite QA accounts — paste into MongoDB Compass (">_ MONGOSH" tab) or run:
 //   mongosh "<UAT MONGODB_URI>" src/scripts/seed-test-accounts.mongosh.js
+// In Compass: first `use <dbName>` (the database that has the users collection),
+// then copy this whole file and paste it as one block. It is wrapped in a single
+// function so pasting it again doesn't hit "already declared" errors.
 //
 // Same accounts as seed-test-accounts.js, for when you can't run Node on the server:
 // 1 rider + 4 drivers that are ride-ready — email verified, KYC approved,
@@ -14,7 +17,12 @@
 // PASSWORD_HASH below is bcrypt (cost 12) of that password — regenerate it if you change it:
 //   node -e "import('bcryptjs').then(async b=>console.log(await b.default.hash('<new password>',12)))"
 
-// If your database name differs, switch first:  use <dbName>
+(() => {
+if (!db.getCollectionNames().includes("users")) {
+  print(`Database "${db.getName()}" has no users collection - run: use <your RideRite db name>  then paste again.`);
+  return;
+}
+
 const PASSWORD_HASH = "$2b$12$DM8YZZlohcpX8PDfFrw.t.NWwGMrFmMrwzDNZ12e9gvCF1.2yUUwi";
 
 // Drivers' home pins (used only if their browser blocks GPS). Default: downtown Orlando, FL.
@@ -160,4 +168,5 @@ for (const d of DRIVERS) {
   print(`driver  ${d.email}  ${d.vehicle.type}  ${d.vehicle.color} ${d.vehicle.make} ${d.vehicle.model} (${d.vehicle.plate})`);
 }
 
-print("Done. Subscriptions are active for 30 days — re-run this script to extend them.");
+print("Done. Subscriptions are active for 30 days - re-run this script to extend them.");
+})();
