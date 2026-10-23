@@ -10,6 +10,7 @@ import { broadcastTrip } from "../realtime/index.js";
 import { startDispatch } from "../utils/dispatch.js";
 import { StripeEvent } from "../models/StripeEvent.js";
 import { confirmRentalPaid, failRentalPayment } from "../utils/rentalBooking.js";
+import { notifyUser } from "./notifications.controller.js";
 import { confirmChauffeurPaid, failChauffeurPayment } from "../utils/chauffeurBooking.js";
 import {
   applyStripeSubscription,
@@ -67,6 +68,14 @@ async function markTripPaid(trip, { provider, paymentIntentId, paymentMethodType
 
   // Offer the ride to the nearest driver (no-op if dispatch already started)
   if (trip.status === "requested") await startDispatch(trip);
+
+  // The receipt is emailed when the trip completes; this is the in-app / push confirmation
+  await notifyUser(trip.riderId, {
+    category: "payment",
+    title: "Payment received",
+    body: `$${(trip.fareCents / 100).toFixed(2)} paid — we're finding your driver.`,
+    data: { tripId: trip._id.toString(), href: `/book?trip_id=${trip._id}` },
+  });
 
   return trip;
 }
@@ -448,8 +457,21 @@ async function onIntentSucceeded(pi) {
 async function onIntentFailed(pi) {
   const purpose = pi.metadata?.purpose || (pi.metadata?.tripId ? "ride" : null);
   if (purpose === "ride" && pi.metadata?.tripId) {
-    await Trip.updateOne({ _id: pi.metadata.tripId, paid: false }, { paymentStatus: "failed" });
+    const failed = await Trip.findOneAndUpdate(
+      { _id: pi.metadata.tripId, paid: false, paymentStatus: { $ne: "failed" } },
+      { paymentStatus: "failed" },
+      { new: true },
+    );
     await Payment.findOneAndUpdate({ stripePaymentIntentId: pi.id }, { status: "failed" });
+    if (failed) {
+      await notifyUser(failed.riderId, {
+        category: "payment",
+        title: "Payment failed",
+        body: `Your card was declined for $${(failed.fareCents / 100).toFixed(2)}. Try another card to request the ride.`,
+        data: { tripId: failed._id.toString(), href: `/book?trip_id=${failed._id}` },
+        email: true,
+      });
+    }
     return "ride";
   }
   if (purpose === "rental" && pi.metadata?.refId) {

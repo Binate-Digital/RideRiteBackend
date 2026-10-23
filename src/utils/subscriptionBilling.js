@@ -130,6 +130,7 @@ export async function forceDriverOffline(userId, status) {
         ? "We couldn't renew your driver membership, so you've been taken offline. Update your card in Billing to keep driving."
         : "Your driver membership is no longer active. Subscribe again in Billing to receive ride requests.",
     data: { href: "/driver/billing", status },
+    email: true,
   });
 }
 
@@ -161,6 +162,19 @@ export async function handleInvoicePaid(invoice) {
   if (!sub) return null;
   sub.lastPaymentAt = new Date((invoice.status_transitions?.paid_at || Date.now() / 1000) * 1000);
   await sub.save();
+
+  // A renewal charge (not the first invoice) → tell the driver once per invoice
+  const isRenewal = invoice.billing_reason === "subscription_cycle";
+  const alreadyRecorded = await Payment.exists({ stripeInvoiceId: invoice.id, status: "succeeded" });
+  if (isRenewal && !alreadyRecorded) {
+    await notifyUser(sub.userId, {
+      category: "subscription",
+      title: "Membership renewed",
+      body: `$${((invoice.amount_paid ?? sub.amountCents) / 100).toFixed(2)} charged — your driver membership is active until ${sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd).toLocaleDateString("en-US") : "the next renewal"}.`,
+      data: { href: "/driver/billing", status: "active" },
+      email: true,
+    });
+  }
 
   const piId = typeof invoice.payment_intent === "string" ? invoice.payment_intent : invoice.payment_intent?.id;
   await Payment.findOneAndUpdate(

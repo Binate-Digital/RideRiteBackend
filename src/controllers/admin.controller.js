@@ -733,6 +733,8 @@ const promoSchema = z
     active: z.boolean().optional(),
     expiresAt: z.coerce.date().nullable().optional(),
     maxUses: z.number().int().min(1).nullable().optional(),
+    /** Notify riders who opted in to promotions (in-app, email, push) */
+    announce: z.boolean().optional(),
   })
   .refine((d) => Boolean(d.percentOff) !== Boolean(d.amountOffCents), {
     message: "Set either percentOff or amountOffCents",
@@ -749,10 +751,35 @@ export const createPromo = asyncHandler(async (req, res) => {
   const data = promoSchema.parse(req.body || {});
   const code = data.code.toUpperCase();
   if (await PromoCode.exists({ code })) throw httpError(409, "Promo code already exists");
-  const promo = await PromoCode.create({ ...data, code });
+  const { announce, ...fields } = data;
+  const promo = await PromoCode.create({ ...fields, code });
   await audit(req.user._id, "promo.create", "PromoCode", promo._id, { code });
+  if (announce && promo.active !== false) void announcePromo(promo);
   res.status(201).json({ ok: true, promo: promo.toSafeJSON() });
 });
+
+/** Promo category notification to every rider who opted in (promo prefs default off). */
+async function announcePromo(promo) {
+  try {
+    const { notifyUser } = await import("./notifications.controller.js");
+    const off = promo.percentOff ? `${promo.percentOff}% off` : `$${(promo.amountOffCents / 100).toFixed(2)} off`;
+    const riders = await User.find({ role: "rider", isActive: true, "notificationPrefs.promo": true })
+      .select("_id")
+      .limit(5000)
+      .lean();
+    for (const r of riders) {
+      await notifyUser(r._id, {
+        category: "promo",
+        title: `${off} your next ride`,
+        body: `Use code ${promo.code} at checkout${promo.expiresAt ? ` before ${new Date(promo.expiresAt).toLocaleDateString("en-US")}` : ""}.`,
+        data: { href: "/ride", promoCode: promo.code },
+        email: true,
+      });
+    }
+  } catch (err) {
+    console.error("[promo] announce failed:", err.message);
+  }
+}
 
 /** PATCH /api/admin/promos/:id — body: { active?, expiresAt?, maxUses? } */
 export const updatePromo = asyncHandler(async (req, res) => {

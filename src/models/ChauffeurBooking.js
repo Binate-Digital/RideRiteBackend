@@ -17,14 +17,24 @@ const chauffeurBookingSchema = new mongoose.Schema(
     notes: { type: String, default: "", maxlength: 500 },
     status: {
       type: String,
-      enum: ["pending_payment", "requested", "confirmed", "in_progress", "completed", "cancelled", "expired"],
+      // confirmed (paid, looking for a driver) → driver_assigned → in_progress → completed
+      enum: [
+        "pending_payment",
+        "requested",
+        "confirmed",
+        "driver_assigned",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "expired",
+      ],
       default: "pending_payment",
       index: true,
     },
     paid: { type: Boolean, default: false },
     paymentStatus: {
       type: String,
-      enum: ["unpaid", "pending", "paid", "refunded", "failed"],
+      enum: ["unpaid", "pending", "paid", "refunding", "refunded", "partially_refunded", "failed"],
       default: "unpaid",
     },
     /** Service tier the rider picked (see CHAUFFEUR_TIERS); vehicleType follows from it. */
@@ -32,9 +42,23 @@ const chauffeurBookingSchema = new mongoose.Schema(
     holdExpiresAt: { type: Date, default: null, index: true },
     paidAt: { type: Date, default: null },
     stripePaymentIntentId: { type: String, default: null, index: true },
+    assignedAt: { type: Date, default: null },
+    startedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    cancelledAt: { type: Date, default: null },
+    /** rider | system (no driver accepted before the start time) */
+    cancelledBy: { type: String, default: null },
+    cancelReason: { type: String, default: null },
+    refundCents: { type: Number, default: 0 },
+    refundPercent: { type: Number, default: null },
+    /** Reminder keys already sent, e.g. { rider_1440: Date, driver_60: Date } */
+    remindersSent: { type: Object, default: {} },
   },
-  { timestamps: true },
+  { timestamps: true, minimize: false },
 );
+
+// Driver hub: open bookings of a vehicle type, soonest first
+chauffeurBookingSchema.index({ status: 1, vehicleType: 1, startAt: 1 });
 
 chauffeurBookingSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
@@ -55,6 +79,14 @@ chauffeurBookingSchema.methods.toSafeJSON = function toSafeJSON() {
     paymentStatus: this.paymentStatus,
     holdExpiresAt: this.holdExpiresAt,
     paidAt: this.paidAt,
+    assignedAt: this.assignedAt,
+    startedAt: this.startedAt,
+    completedAt: this.completedAt,
+    cancelledAt: this.cancelledAt,
+    cancelledBy: this.cancelledBy,
+    cancelReason: this.cancelReason,
+    refundCents: this.refundCents,
+    refundPercent: this.refundPercent,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

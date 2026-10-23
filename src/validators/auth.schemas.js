@@ -48,9 +48,50 @@ export const signupSchema = z.object({
   role: z.enum(["rider", "driver"]).optional().default("rider"),
 });
 
-export const loginSchema = z.object({
-  email: z.string().trim().email(),
-  password: z.string().min(1).max(72),
+/** Email + password, or (phone accounts) phone + password. */
+export const loginSchema = z
+  .object({
+    email: z.string().trim().email().optional(),
+    phone: z.string().trim().optional(),
+    password: z.string().min(1).max(72),
+  })
+  .refine((d) => d.email || d.phone, { message: "Enter your email or phone number" });
+
+const usPhone = z
+  .string()
+  .trim()
+  .refine((v) => isCompleteUsPhone(v), "Enter a valid 10-digit US phone (e.g. 555-201-0123)");
+const smsCode = z.string().trim().regex(/^\d{4,8}$/, "Enter the code from the SMS");
+
+export const phoneStartSchema = z.object({
+  phone: usPhone,
+  purpose: z.enum(["signup", "login", "reset"]).default("login"),
+});
+
+export const phoneSignupSchema = z.object({
+  fullName: z.string().trim().min(2).max(80),
+  phone: usPhone,
+  otp: smsCode,
+  password: z.string().min(8).max(72),
+  role: z.enum(["rider", "driver"]).optional().default("rider"),
+});
+
+export const phoneLoginSchema = z.object({
+  phone: usPhone,
+  otp: smsCode,
+});
+
+export const phoneResetSchema = z.object({
+  phone: usPhone,
+  otp: smsCode,
+  password: z.string().min(8).max(72),
+});
+
+export const socialLoginSchema = z.object({
+  idToken: z.string().min(20).max(8192),
+  /** Apple passes the name to the browser once (first sign-in) — not in the token */
+  fullName: z.string().trim().max(80).optional(),
+  role: z.enum(["rider", "driver"]).optional().default("rider"),
 });
 
 /** Prefer email + 6-digit OTP; legacy long token still accepted. */

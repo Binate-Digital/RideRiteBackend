@@ -29,9 +29,13 @@ router.post("/resend-verification", sensitiveLimiter, auth.resendVerification);
 router.post("/forgot-password", sensitiveLimiter, auth.forgotPassword);
 router.post("/reset-password", sensitiveLimiter, auth.resetPassword);
 router.post("/refresh", authLimiter, auth.refresh);
-router.post("/social/:provider", authLimiter, auth.socialStub);
-router.post("/phone/start", sensitiveLimiter, auth.phoneStartStub);
-router.post("/phone/verify", sensitiveLimiter, auth.phoneVerifyStub);
+router.get("/providers", auth.providers);
+router.post("/social/:provider", authLimiter, auth.socialLogin);
+// Per-IP limit here; per-number send limits live in utils/sms.js
+router.post("/phone/start", sensitiveLimiter, auth.phoneStart);
+router.post("/phone/signup", sensitiveLimiter, auth.phoneSignup);
+router.post("/phone/verify", sensitiveLimiter, auth.phoneLogin);
+router.post("/phone/reset-password", sensitiveLimiter, auth.phoneResetPassword);
 
 router.get("/me", requireAuth, auth.me);
 router.patch("/me", requireAuth, auth.updateProfile);

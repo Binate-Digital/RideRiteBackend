@@ -121,5 +121,19 @@ export async function settleTripRefund(tripOrId, { reason = "requested_by_custom
     { $set: { paymentStatus } },
     { new: true },
   );
+  if (result?.amountCents > 0) {
+    try {
+      const { notifyUser } = await import("../controllers/notifications.controller.js");
+      await notifyUser(trip.riderId, {
+        category: "payment",
+        title: "Refund issued",
+        body: `$${(result.amountCents / 100).toFixed(2)} is on its way back to your card (${trip.status === "no_drivers" ? "no driver was available" : "ride cancelled"}).`,
+        data: { tripId: trip._id.toString(), href: "/trips", refundCents: result.amountCents },
+        email: true,
+      });
+    } catch {
+      /* non-fatal */
+    }
+  }
   return { trip: updated, refund: result, refundedCents: refunded };
 }

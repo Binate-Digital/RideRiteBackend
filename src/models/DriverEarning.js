@@ -9,11 +9,13 @@ import mongoose from "mongoose";
  *                   netCents = gross − commission.
  * cancellation_fee: the rider's late-cancel fee, credited to the driver in full.
  * rental:           a peer-to-peer listing owner's share (subtotal − RENTAL_COMMISSION_RATE).
+ * chauffeur:        the assigned private driver's share of a completed chauffeur booking
+ *                   (total − CHAUFFEUR_COMMISSION_RATE).
  * bonus:            placeholder for the monthly bonus program (Phase 4).
  * adjustment:       admin correction (+/−).
  * deduction:        money the driver owes, e.g. a cash fare they collected (fare − their net).
  */
-export const EARNING_TYPES = ["trip", "cancellation_fee", "rental", "bonus", "adjustment", "deduction"];
+export const EARNING_TYPES = ["trip", "cancellation_fee", "rental", "chauffeur", "bonus", "adjustment", "deduction"];
 
 const driverEarningSchema = new mongoose.Schema(
   {
@@ -21,6 +23,7 @@ const driverEarningSchema = new mongoose.Schema(
     type: { type: String, enum: EARNING_TYPES, required: true, index: true },
     tripId: { type: mongoose.Schema.Types.ObjectId, ref: "Trip", default: null },
     rentalBookingId: { type: mongoose.Schema.Types.ObjectId, ref: "RentalBooking", default: null },
+    chauffeurBookingId: { type: mongoose.Schema.Types.ObjectId, ref: "ChauffeurBooking", default: null },
     grossCents: { type: Number, default: 0 },
     commissionCents: { type: Number, default: 0 },
     /** What this entry adds to (or, if negative, removes from) the driver's payout balance */
@@ -52,6 +55,10 @@ driverEarningSchema.index(
   { rentalBookingId: 1, type: 1 },
   { unique: true, partialFilterExpression: { rentalBookingId: { $type: "objectId" } } },
 );
+driverEarningSchema.index(
+  { chauffeurBookingId: 1, type: 1 },
+  { unique: true, partialFilterExpression: { chauffeurBookingId: { $type: "objectId" } } },
+);
 
 driverEarningSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
@@ -60,6 +67,7 @@ driverEarningSchema.methods.toSafeJSON = function toSafeJSON() {
     type: this.type,
     tripId: this.tripId ? this.tripId.toString() : null,
     rentalBookingId: this.rentalBookingId ? this.rentalBookingId.toString() : null,
+    chauffeurBookingId: this.chauffeurBookingId ? this.chauffeurBookingId.toString() : null,
     grossCents: this.grossCents,
     commissionCents: this.commissionCents,
     netCents: this.netCents,

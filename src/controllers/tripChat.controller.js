@@ -3,8 +3,18 @@ import { emitChatMessage } from "../realtime/index.js";
 import { TripMessage } from "../models/TripMessage.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
+import { env } from "../config/env.js";
+import { telephonyConfigured } from "../utils/telephony.js";
 
 const ACTIVE = ["accepted", "en_route", "arrived", "in_progress"];
+const ENDED = ["completed", "cancelled", "no_drivers"];
+
+/** Chat stays readable during the trip and CHAT_HISTORY_HOURS after it ends (admins: always). */
+function chatReadable(trip, user, now = Date.now()) {
+  if (user.role === "admin" || !ENDED.includes(trip.status)) return true;
+  const endedAt = trip.completedAt || trip.cancelledAt || trip.noDriversAt || trip.updatedAt;
+  return now - new Date(endedAt).getTime() <= env.chatHistoryHours * 3600000;
+}
 
 async function assertTripParty(req) {
   const trip = await Trip.findById(req.params.id);
@@ -21,10 +31,16 @@ async function assertTripParty(req) {
 /** GET /api/rides/:id/messages */
 export const listMessages = asyncHandler(async (req, res) => {
   const trip = await assertTripParty(req);
+  if (!chatReadable(trip, req.user)) {
+    throw httpError(403, `Trip chat closes ${env.chatHistoryHours}h after the trip ends`, { code: "CHAT_CLOSED" });
+  }
   const rows = await TripMessage.find({ tripId: trip._id }).sort({ createdAt: 1 }).limit(200);
+  const active = ACTIVE.includes(trip.status);
   res.json({
     ok: true,
-    maskedPhone: "845-RIDE", // stub proxy until Twilio provisioned
+    // Masked calling (Twilio) — only during an active trip and only when configured
+    calling: { configured: telephonyConfigured(), available: active && telephonyConfigured() },
+    chatOpen: active,
     messages: rows.map((r) => r.toSafeJSON()),
   });
 });

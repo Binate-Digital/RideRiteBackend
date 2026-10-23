@@ -27,3 +27,14 @@ export function normalizeOptionalUsPhone(value) {
   }
   return formatUsPhone(trimmed);
 }
+
+/** US number → E.164 (+15552010123), or null when it isn't a complete 10-digit number. */
+export function toE164(value = "") {
+  const d = digitsOnly(value);
+  return d.length === 10 ? `+1${d}` : null;
+}
+
+/** "+15552010123" → "555-201-0123" (display / legacy `phone` field format). */
+export function e164ToDisplay(e164 = "") {
+  return formatUsPhone(String(e164).replace(/^\+1/, ""));
+}

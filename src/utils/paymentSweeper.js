@@ -4,6 +4,9 @@ import { settleTripRefund } from "./refunds.js";
 import { sweepExpiredRentalHolds } from "./rentalBooking.js";
 import { sweepExpiredChauffeurHolds } from "./chauffeurBooking.js";
 import { broadcastTrip } from "../realtime/index.js";
+import { sweepBookingRefunds } from "./bookingRefunds.js";
+import { RentalBooking } from "../models/RentalBooking.js";
+import { ChauffeurBooking } from "../models/ChauffeurBooking.js";
 
 let sweeper = null;
 
@@ -36,6 +39,8 @@ export async function sweepPayments(now = new Date()) {
       console.log(`[payments] trip ${t._id} refund settled → ${result.trip.paymentStatus}`);
     }
   }
+  // Cancelled rentals / chauffeur bookings whose refund hit a Stripe error
+  refunded += (await sweepBookingRefunds(RentalBooking, "rental")) + (await sweepBookingRefunds(ChauffeurBooking, "chauffeur"));
   return { released, refunded };
 }
 

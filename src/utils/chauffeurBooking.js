@@ -4,7 +4,9 @@ import { User } from "../models/User.js";
 import { env } from "../config/env.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { cancelOpenIntent, recordIntentSucceeded } from "./checkout.js";
-import { chauffeurReceiptEmail, sendMail } from "./mailer.js";
+import { chauffeurReceiptEmail } from "./mailer.js";
+import { money } from "./bookingRefunds.js";
+import { emitToDrivers } from "../realtime/index.js";
 
 /**
  * Private driver service tiers (TRD 4.9). The backend is the single source of pricing: each
@@ -106,17 +108,27 @@ export async function confirmChauffeurPaid(bookingId, { paymentIntentId, provide
   });
 
   const rider = await User.findById(booking.riderId).select("fullName email");
-  if (rider?.email) {
-    await sendMail({ to: rider.email, ...chauffeurReceiptEmail({ fullName: rider.fullName, booking }) });
-  }
   try {
-    const { notifyUser } = await import("../controllers/notifications.controller.js");
+    const { emailUser, notifyUser } = await import("../controllers/notifications.controller.js");
+    await emailUser(booking.riderId, "payment", chauffeurReceiptEmail({ fullName: rider?.fullName, booking }));
     await notifyUser(booking.riderId, {
       category: "chauffeur",
       title: "Private driver booked",
-      body: `${new Date(booking.startAt).toLocaleString("en-US")} · ${booking.durationHours}h`,
+      body: `${new Date(booking.startAt).toLocaleString("en-US")} · ${booking.durationHours}h — we'll tell you when a driver is assigned.`,
       data: { chauffeurBookingId: booking._id.toString(), href: "/chauffeur" },
     });
+  } catch {
+    /* non-fatal */
+  }
+  // Show it in eligible drivers' "Scheduled bookings" right away
+  emitToDrivers("chauffeur:open", {
+    bookingId: booking._id.toString(),
+    vehicleType: booking.vehicleType,
+    startAt: booking.startAt,
+  });
+  try {
+    const { broadcastChauffeur } = await import("./chauffeurAssignment.js");
+    await broadcastChauffeur(booking);
   } catch {
     /* non-fatal */
   }
@@ -127,7 +139,18 @@ export async function failChauffeurPayment(bookingId, paymentIntentId) {
   if (paymentIntentId) {
     await Payment.updateMany({ stripePaymentIntentId: paymentIntentId }, { $set: { status: "failed" } });
   }
-  return expireChauffeurHold(bookingId, { paymentFailed: true });
+  const booking = await expireChauffeurHold(bookingId, { paymentFailed: true });
+  if (booking) {
+    const { notifyUser } = await import("../controllers/notifications.controller.js");
+    await notifyUser(booking.riderId, {
+      category: "payment",
+      title: "Private driver payment failed",
+      body: `Your card was declined for ${money(booking.totalCents)}. Book again to retry.`,
+      data: { chauffeurBookingId: booking._id.toString(), href: "/chauffeur" },
+      email: true,
+    });
+  }
+  return booking;
 }
 
 export async function sweepExpiredChauffeurHolds(now = new Date()) {

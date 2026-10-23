@@ -14,7 +14,7 @@ const rentalBookingSchema = new mongoose.Schema(
     totalCents: { type: Number, required: true },
     status: {
       type: String,
-      // expired: payment not completed before holdExpiresAt — its dates were released
+      // expired: payment not completed before holdExpiresAt â€” its dates were released
       enum: ["pending_payment", "confirmed", "active", "completed", "cancelled", "expired"],
       default: "pending_payment",
       index: true,
@@ -22,7 +22,8 @@ const rentalBookingSchema = new mongoose.Schema(
     paid: { type: Boolean, default: false },
     paymentStatus: {
       type: String,
-      enum: ["unpaid", "pending", "paid", "refunded", "failed"],
+      // refunding: a cancellation refund is being sent to Stripe (claimed so it runs once)
+      enum: ["unpaid", "pending", "paid", "refunding", "refunded", "partially_refunded", "failed"],
       default: "unpaid",
     },
     source: { type: String, enum: ["peer", "fleet"], default: "peer" },
@@ -30,8 +31,14 @@ const rentalBookingSchema = new mongoose.Schema(
     holdExpiresAt: { type: Date, default: null, index: true },
     paidAt: { type: Date, default: null },
     stripePaymentIntentId: { type: String, default: null, index: true },
+    /** Renter cancelled a paid booking: refund owed per the cancellation policy */
+    cancelledAt: { type: Date, default: null },
+    refundCents: { type: Number, default: 0 },
+    refundPercent: { type: Number, default: null },
+    /** Reminder keys already sent, e.g. { renter_1440: Date } (see utils/reminders.js) */
+    remindersSent: { type: Object, default: {} },
   },
-  { timestamps: true },
+  { timestamps: true, minimize: false },
 );
 
 rentalBookingSchema.methods.toSafeJSON = function toSafeJSON() {
@@ -53,6 +60,9 @@ rentalBookingSchema.methods.toSafeJSON = function toSafeJSON() {
     source: this.source,
     holdExpiresAt: this.holdExpiresAt,
     paidAt: this.paidAt,
+    cancelledAt: this.cancelledAt,
+    refundCents: this.refundCents,
+    refundPercent: this.refundPercent,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

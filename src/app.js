@@ -18,6 +18,7 @@ import notificationsRoutes from "./routes/notifications.routes.js";
 import rentalsRoutes from "./routes/rentals.routes.js";
 import chauffeurRoutes from "./routes/chauffeur.routes.js";
 import publicRoutes from "./routes/public.routes.js";
+import telephonyRoutes from "./routes/telephony.routes.js";
 import { stripeWebhook } from "./controllers/payments.controller.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 
@@ -89,6 +90,7 @@ export function createApp() {
   app.use("/api/rentals", rentalsRoutes);
   app.use("/api/chauffeur", chauffeurRoutes);
   app.use("/api/public", publicRoutes);
+  app.use("/api/telephony", telephonyRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

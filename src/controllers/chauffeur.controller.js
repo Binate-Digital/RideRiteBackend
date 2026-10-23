@@ -11,6 +11,15 @@ import {
   quoteChauffeur,
   validateChauffeurStart,
 } from "../utils/chauffeurBooking.js";
+import {
+  acceptChauffeurBooking,
+  cancelPaidChauffeur,
+  chauffeurBookingsForDriver,
+  chauffeurBookingsForRider,
+  completeChauffeurBooking,
+  openChauffeurBookingsFor,
+  startChauffeurBooking,
+} from "../utils/chauffeurAssignment.js";
 
 /** GET /api/chauffeur/options — tiers with backend hourly rates (the web shows these) */
 export const options = asyncHandler(async (_req, res) => {
@@ -19,6 +28,10 @@ export const options = asyncHandler(async (_req, res) => {
     tiers: chauffeurOptions(),
     minLeadMinutes: env.chauffeurMinLeadMinutes,
     holdMinutes: Math.ceil(env.bookingHoldSeconds / 60),
+    cancelPolicy: {
+      fullRefundHours: env.chauffeurFullRefundHours,
+      lateRefundPercent: env.chauffeurLateRefundPercent,
+    },
   });
 });
 
@@ -134,19 +147,93 @@ export const syncPayment = asyncHandler(async (req, res) => {
   res.json({ ok: true, paymentIntentStatus: status, booking: booking.toSafeJSON() });
 });
 
-/** POST /api/chauffeur/bookings/:id/cancel — abandon an unpaid booking */
+/**
+ * POST /api/chauffeur/bookings/:id/cancel — abandon an unpaid booking, or cancel a paid one
+ * before it starts (refund per the cancellation policy).
+ */
 export const cancelBooking = asyncHandler(async (req, res) => {
   const booking = await loadRiderBooking(req);
+  if (booking.paid) {
+    const reason = String(req.body?.reason || "").trim().slice(0, 200) || null;
+    const { booking: done, policy } = await cancelPaidChauffeur(booking, { by: "rider", reason });
+    const [json] = await chauffeurBookingsForRider([done]);
+    return res.json({
+      ok: true,
+      booking: json,
+      refundCents: policy.refundCents,
+      refundPercent: policy.percent,
+      message:
+        policy.refundCents > 0
+          ? `Booking cancelled. $${(policy.refundCents / 100).toFixed(2)} (${policy.percent}%) is being refunded.`
+          : "Booking cancelled. No refund applies.",
+    });
+  }
   if (booking.status !== "pending_payment") {
-    throw httpError(400, "Only an unpaid booking can be released here — contact support to cancel a paid booking");
+    throw httpError(400, "This booking can't be cancelled");
   }
   await expireChauffeurHold(booking._id);
   await ChauffeurBooking.updateOne({ _id: booking._id, status: "expired" }, { $set: { status: "cancelled" } });
   res.json({ ok: true, booking: (await ChauffeurBooking.findById(booking._id)).toSafeJSON() });
 });
 
-/** GET /api/chauffeur/bookings/mine */
+/** GET /api/chauffeur/bookings/mine — with the assigned driver's card and cancel quote */
 export const listMine = asyncHandler(async (req, res) => {
   const rows = await ChauffeurBooking.find({ riderId: req.user._id }).sort({ createdAt: -1 }).limit(50);
-  res.json({ ok: true, bookings: rows.map((r) => r.toSafeJSON()) });
+  res.json({
+    ok: true,
+    cancelPolicy: {
+      fullRefundHours: env.chauffeurFullRefundHours,
+      lateRefundPercent: env.chauffeurLateRefundPercent,
+    },
+    bookings: await chauffeurBookingsForRider(rows),
+  });
+});
+
+// ---------- Driver side: scheduled bookings ----------
+
+/** GET /api/chauffeur/driver/open — bookings this driver can accept (eligibility + vehicle type) */
+export const driverOpen = asyncHandler(async (req, res) => {
+  const result = await openChauffeurBookingsFor(req.user._id);
+  res.json({
+    ok: true,
+    eligible: result.eligible,
+    reason: result.reason,
+    vehicleType: result.vehicleType ?? result.profile?.vehicleType ?? null,
+    bookings: await chauffeurBookingsForDriver(result.bookings),
+  });
+});
+
+/** GET /api/chauffeur/driver/mine — this driver's assigned / running / recent bookings */
+export const driverMine = asyncHandler(async (req, res) => {
+  const rows = await ChauffeurBooking.find({
+    driverId: req.user._id,
+    $or: [
+      { status: { $in: ["driver_assigned", "in_progress"] } },
+      { status: { $in: ["completed", "cancelled"] }, updatedAt: { $gte: new Date(Date.now() - 7 * 86400000) } },
+    ],
+  })
+    .sort({ startAt: 1 })
+    .limit(50);
+  res.json({ ok: true, bookings: await chauffeurBookingsForDriver(rows) });
+});
+
+/** POST /api/chauffeur/bookings/:id/accept — first eligible driver wins */
+export const driverAccept = asyncHandler(async (req, res) => {
+  const booking = await acceptChauffeurBooking(req.params.id, req.user._id);
+  const [json] = await chauffeurBookingsForDriver([booking]);
+  res.json({ ok: true, booking: json });
+});
+
+/** POST /api/chauffeur/bookings/:id/start */
+export const driverStart = asyncHandler(async (req, res) => {
+  const booking = await startChauffeurBooking(req.params.id, req.user._id);
+  const [json] = await chauffeurBookingsForDriver([booking]);
+  res.json({ ok: true, booking: json });
+});
+
+/** POST /api/chauffeur/bookings/:id/complete */
+export const driverComplete = asyncHandler(async (req, res) => {
+  const booking = await completeChauffeurBooking(req.params.id, req.user._id);
+  const [json] = await chauffeurBookingsForDriver([booking]);
+  res.json({ ok: true, booking: json });
 });

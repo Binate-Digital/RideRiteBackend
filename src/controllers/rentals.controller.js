@@ -6,13 +6,21 @@ import { env } from "../config/env.js";
 import { isStripeMock } from "../lib/stripe.js";
 import { createCheckoutIntent, retrieveIntentStatus } from "../utils/checkout.js";
 import {
+  bookedDaysForListing,
+  cancelPaidRental,
   confirmRentalPaid,
+  dayKey,
   expireRentalHold,
+  listingsBookedBetween,
   quoteRental,
   releaseRentalDays,
+  rentalCancelQuote,
   reserveRentalDays,
   toUtcDay,
 } from "../utils/rentalBooking.js";
+
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const VEHICLE_TYPES = ["sedan", "suv", "truck"];
 
 const FLEET_SEED = [
   {
@@ -70,21 +78,83 @@ async function ensureFleetSeed() {
   );
 }
 
-/** GET /api/rentals/listings?source=&vehicleType=&city=&q= */
+/**
+ * GET /api/rentals/listings — filters (all optional):
+ *   source=peer|fleet  vehicleType=sedan|suv|truck  city=  q=
+ *   minDailyCents= maxDailyCents=   price range per day
+ *   startDate=YYYY-MM-DD endDate=   only listings free for every day of [start, end)
+ */
 export const listListings = asyncHandler(async (req, res) => {
   await ensureFleetSeed();
   const filter = { status: "active" };
   if (req.query.source === "peer" || req.query.source === "fleet") filter.source = req.query.source;
-  if (["sedan", "suv", "truck"].includes(String(req.query.vehicleType || ""))) {
+  if (VEHICLE_TYPES.includes(String(req.query.vehicleType || ""))) {
     filter.vehicleType = req.query.vehicleType;
   }
-  if (req.query.city) filter.city = new RegExp(String(req.query.city), "i");
+  if (req.query.city) filter.city = new RegExp(`^${escapeRegex(String(req.query.city).trim())}`, "i");
   if (req.query.q) {
-    const rx = new RegExp(String(req.query.q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const rx = new RegExp(escapeRegex(req.query.q), "i");
     filter.$or = [{ title: rx }, { make: rx }, { model: rx }, { city: rx }];
+  }
+  const minCents = Number(req.query.minDailyCents);
+  const maxCents = Number(req.query.maxDailyCents);
+  if (Number.isFinite(minCents) && minCents > 0) filter.dailyRateCents = { $gte: minCents };
+  if (Number.isFinite(maxCents) && maxCents > 0) filter.dailyRateCents = { ...filter.dailyRateCents, $lte: maxCents };
+
+  if (req.query.startDate || req.query.endDate) {
+    const start = toUtcDay(req.query.startDate);
+    const end = toUtcDay(req.query.endDate);
+    if (!start || !end || !(start < end)) throw httpError(400, "Choose a return date after the pickup date");
+    if ((end - start) / 86400000 > 60) throw httpError(400, "Rentals are limited to 60 days");
+    // Inside the owner's availability window, and no booked / held day in the range
+    filter.$and = [
+      { $or: [{ availableFrom: null }, { availableFrom: { $lte: start } }] },
+      { $or: [{ availableTo: null }, { availableTo: { $gte: end } }] },
+    ];
+    const taken = await listingsBookedBetween(start, end);
+    if (taken.length) filter._id = { $nin: taken };
   }
   const rows = await RentalListing.find(filter).sort({ createdAt: -1 }).limit(100);
   res.json({ ok: true, listings: rows.map((r) => r.toSafeJSON()) });
+});
+
+/** GET /api/rentals/locations — cities that have active listings (location filter options) */
+export const listLocations = asyncHandler(async (_req, res) => {
+  await ensureFleetSeed();
+  const rows = await RentalListing.aggregate([
+    { $match: { status: "active", city: { $ne: "" } } },
+    { $group: { _id: { city: "$city", state: "$state" }, count: { $sum: 1 } } },
+    { $sort: { "_id.city": 1 } },
+  ]);
+  res.json({
+    ok: true,
+    locations: rows.map((r) => ({ city: r._id.city, state: r._id.state, count: r.count })),
+    vehicleTypes: VEHICLE_TYPES,
+  });
+});
+
+/**
+ * GET /api/rentals/listings/:id/availability?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * Booked days (paid bookings + live holds) for the calendar; default window today → +90 days.
+ */
+export const listingAvailability = asyncHandler(async (req, res) => {
+  const listing = await RentalListing.findById(req.params.id);
+  if (!listing || listing.status !== "active") throw httpError(404, "Listing not available");
+  const from = toUtcDay(req.query.from || new Date()) || toUtcDay(new Date());
+  let to = toUtcDay(req.query.to || new Date(from.getTime() + 90 * 86400000));
+  if (!to || !(from < to)) throw httpError(400, "`to` must be after `from`");
+  if ((to - from) / 86400000 > 366) to = new Date(from.getTime() + 366 * 86400000);
+  const booked = await bookedDaysForListing(listing._id, from, to);
+  res.json({
+    ok: true,
+    listingId: listing._id.toString(),
+    from: dayKey(from),
+    to: dayKey(to),
+    availableFrom: listing.availableFrom ? dayKey(toUtcDay(listing.availableFrom)) : null,
+    availableTo: listing.availableTo ? dayKey(toUtcDay(listing.availableTo)) : null,
+    bookedDays: booked.days,
+    bookedRanges: booked.ranges,
+  });
 });
 
 /** GET /api/rentals/listings/mine */
@@ -296,11 +366,27 @@ export const syncPayment = asyncHandler(async (req, res) => {
   res.json({ ok: true, paymentIntentStatus: status, booking: booking.toSafeJSON() });
 });
 
-/** POST /api/rentals/bookings/:id/cancel — renter abandons an unpaid hold (frees the dates) */
+/**
+ * POST /api/rentals/bookings/:id/cancel — renter releases an unpaid hold, or cancels a paid
+ * rental before pickup (refund per the cancellation policy; see cancelPaidRental).
+ */
 export const cancelBooking = asyncHandler(async (req, res) => {
   const booking = await loadRenterBooking(req);
+  if (booking.paid) {
+    const { booking: done, policy } = await cancelPaidRental(booking);
+    return res.json({
+      ok: true,
+      booking: done.toSafeJSON(),
+      refundCents: policy.refundCents,
+      refundPercent: policy.percent,
+      message:
+        policy.refundCents > 0
+          ? `Rental cancelled. $${(policy.refundCents / 100).toFixed(2)} (${policy.percent}%) is being refunded.`
+          : "Rental cancelled. No refund applies.",
+    });
+  }
   if (booking.status !== "pending_payment") {
-    throw httpError(400, "Only an unpaid booking can be released here — contact support to cancel a paid rental");
+    throw httpError(400, "This booking can't be cancelled");
   }
   await expireRentalHold(booking._id);
   await RentalBooking.updateOne({ _id: booking._id, status: "expired" }, { $set: { status: "cancelled" } });
@@ -315,15 +401,27 @@ export const listMyBookings = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(100);
   const listings = await RentalListing.find({ _id: { $in: rows.map((r) => r.listingId) } })
-    .select("title")
+    .select("title city state photos vehicleType")
     .lean();
-  const titles = new Map(listings.map((l) => [String(l._id), l.title]));
+  const byId = new Map(listings.map((l) => [String(l._id), l]));
+  const now = new Date();
   res.json({
     ok: true,
-    bookings: rows.map((r) => ({
-      ...r.toSafeJSON(),
-      listingTitle: titles.get(String(r.listingId)) ?? null,
-      role: String(r.renterId) === String(req.user._id) ? "renter" : "owner",
-    })),
+    cancelPolicy: { fullRefundHours: env.rentalFullRefundHours, lateRefundPercent: env.rentalLateRefundPercent },
+    bookings: rows.map((r) => {
+      const l = byId.get(String(r.listingId));
+      const role = String(r.renterId) === String(req.user._id) ? "renter" : "owner";
+      const cancellable = role === "renter" && r.paid && r.status === "confirmed" && now < r.startDate;
+      return {
+        ...r.toSafeJSON(),
+        listingTitle: l?.title ?? null,
+        listingCity: l ? [l.city, l.state].filter(Boolean).join(", ") : null,
+        listingPhoto: l?.photos?.[0] ?? null,
+        vehicleType: l?.vehicleType ?? null,
+        role,
+        // What cancelling right now would refund (renter, paid, before pickup)
+        cancelQuote: cancellable ? rentalCancelQuote(r, now) : null,
+      };
+    }),
   });
 });

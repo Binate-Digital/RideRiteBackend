@@ -20,7 +20,11 @@ async function insertOnce(doc) {
     return await DriverEarning.create(doc);
   } catch (err) {
     if (err?.code !== 11000) throw err;
-    const key = doc.tripId ? { tripId: doc.tripId } : { rentalBookingId: doc.rentalBookingId };
+    const key = doc.tripId
+      ? { tripId: doc.tripId }
+      : doc.chauffeurBookingId
+        ? { chauffeurBookingId: doc.chauffeurBookingId }
+        : { rentalBookingId: doc.rentalBookingId };
     return DriverEarning.findOne({ ...key, type: doc.type });
   }
 }
@@ -89,6 +93,59 @@ export async function recordRentalOwnerEarning(booking) {
     commissionCents: booking.commissionCents,
     netCents: grossCents - booking.commissionCents,
     description: `Rental ${new Date(booking.startDate).toISOString().slice(0, 10)} → ${new Date(booking.endDate).toISOString().slice(0, 10)}`,
+  });
+}
+
+/**
+ * A paid P2P rental was cancelled and the platform keeps `retainedCents` of the subtotal.
+ * The owner's entry is rescaled to that amount (voided when nothing is kept). If it was
+ * already swept into a payout, the difference becomes a deduction against the next one.
+ */
+export async function adjustRentalOwnerEarning(booking, retainedCents) {
+  if (booking.source !== "peer") return null;
+  const entry = await DriverEarning.findOne({ rentalBookingId: booking._id, type: "rental" });
+  if (!entry || entry.status === "void") return null;
+  const grossCents = Math.max(0, Math.min(retainedCents, booking.subtotalCents));
+  const commissionCents = booking.subtotalCents
+    ? Math.round((grossCents * booking.commissionCents) / booking.subtotalCents)
+    : 0;
+  const netCents = grossCents - commissionCents;
+  if (entry.status === "pending") {
+    // Conditional on still pending: a payout run claiming it meanwhile takes the deduction path
+    const updated = await DriverEarning.findOneAndUpdate(
+      { _id: entry._id, status: "pending" },
+      grossCents > 0
+        ? { $set: { grossCents, commissionCents, netCents, description: `${entry.description} (cancelled — partial)` } }
+        : { $set: { status: "void", description: `${entry.description} (cancelled)` } },
+      { new: true },
+    );
+    if (updated) return updated;
+  }
+  const owed = entry.netCents - netCents;
+  if (owed <= 0) return entry;
+  return insertOnce({
+    driverId: entry.driverId,
+    type: "deduction",
+    rentalBookingId: booking._id,
+    netCents: -owed,
+    description: "Rental cancelled after payout — refunded share",
+  });
+}
+
+/** Completed private-driver booking → the assigned driver's share is owed to them. */
+export async function recordChauffeurEarning(booking) {
+  if (!booking?.driverId) return null;
+  const grossCents = Math.max(0, Math.round(booking.totalCents || 0));
+  const commissionCents = Math.round(grossCents * env.chauffeurCommissionRate);
+  return insertOnce({
+    driverId: booking.driverId,
+    type: "chauffeur",
+    chauffeurBookingId: booking._id,
+    grossCents,
+    commissionCents,
+    netCents: grossCents - commissionCents,
+    description: `Private driver · ${booking.durationHours}h · ${booking.pickupAddress}`,
+    earnedAt: booking.completedAt || new Date(),
   });
 }
 

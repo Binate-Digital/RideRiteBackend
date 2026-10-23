@@ -31,7 +31,7 @@ import {
 import { tripWithDriver, tripsWithDrivers } from "../utils/tripDrivers.js";
 import { settleTripRefund } from "../utils/refunds.js";
 import { recordCancellationFeeEarning, recordTripEarning } from "../utils/earnings.js";
-import { rideReceiptEmail, sendMail } from "../utils/mailer.js";
+import { rideReceiptEmail } from "../utils/mailer.js";
 import { User } from "../models/User.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
@@ -595,7 +595,9 @@ async function sendRideReceipt(trip) {
   try {
     const rider = await User.findById(trip.riderId).select("fullName email");
     if (!rider?.email) return;
-    await sendMail({ to: rider.email, ...rideReceiptEmail({ fullName: rider.fullName, trip }) });
+    // "Payments & receipts" category + email channel decide whether it goes out
+    const { emailUser } = await import("./notifications.controller.js");
+    await emailUser(trip.riderId, "payment", rideReceiptEmail({ fullName: rider.fullName, trip }));
   } catch (err) {
     console.error(`[receipt] trip ${trip._id}:`, err.message);
   }

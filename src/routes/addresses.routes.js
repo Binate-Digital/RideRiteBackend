@@ -7,6 +7,7 @@ const router = Router();
 router.use(requireAuth, requireVerified);
 router.get("/", addresses.list);
 router.post("/", addresses.create);
+router.patch("/:id", addresses.update);
 router.delete("/:id", addresses.remove);
 
 export default router;

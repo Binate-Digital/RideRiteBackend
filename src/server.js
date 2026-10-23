@@ -5,6 +5,7 @@ import { env } from "./config/env.js";
 import { initRealtime } from "./realtime/index.js";
 import { startDispatchSweeper } from "./utils/dispatch.js";
 import { startPaymentSweeper } from "./utils/paymentSweeper.js";
+import { startReminderSweeper } from "./utils/reminders.js";
 
 async function main() {
   await connectDb();
@@ -16,6 +17,8 @@ async function main() {
   startDispatchSweeper();
   // Releases unpaid booking holds and retries pending refunds
   startPaymentSweeper();
+  // Rental / chauffeur reminders (24h, 1h) and unassigned chauffeur bookings at start time
+  startReminderSweeper();
   server.listen(env.port, () => {
     console.log(`[server] ${env.appName} API listening on http://localhost:${env.port}`);
     console.log(`[server] health → http://localhost:${env.port}/health`);

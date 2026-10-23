@@ -65,6 +65,22 @@ export function resetPasswordEmail({ fullName, token }) {
   };
 }
 
+/** Generic notification email (booking updates, reminders, refunds, membership). */
+export function notificationEmail({ fullName, title, body, href }) {
+  const link = href ? `${env.webAppUrl}${href.startsWith("/") ? href : `/${href}`}` : null;
+  return {
+    subject: `${env.appName}: ${title}`,
+    text: `Hi ${fullName || "there"},\n\n${title}\n${body}${link ? `\n\nOpen: ${link}` : ""}\n\nManage notifications in the app under Notifications.`,
+    html: `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#111">
+<h2 style="margin:0 0 8px">${escapeHtml(title)}</h2>
+<p>Hi ${escapeHtml(fullName || "there")},</p>
+<p>${escapeHtml(body)}</p>
+${link ? `<p><a href="${escapeHtml(link)}">Open in ${escapeHtml(env.appName)}</a></p>` : ""}
+<p style="color:#777;font-size:12px">Manage notifications in the app under Notifications.</p>
+</div>`,
+  };
+}
+
 // ---------- Receipts ----------
 
 const money = (cents) => `$${((cents || 0) / 100).toFixed(2)}`;

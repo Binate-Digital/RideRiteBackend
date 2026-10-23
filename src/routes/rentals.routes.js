@@ -6,6 +6,8 @@ import * as rentals from "../controllers/rentals.controller.js";
 const router = Router();
 
 router.get("/listings", rentals.listListings);
+router.get("/locations", rentals.listLocations);
+router.get("/listings/:id/availability", rentals.listingAvailability);
 router.get("/quote", rentals.quote);
 
 router.use(requireAuth, requireVerified);

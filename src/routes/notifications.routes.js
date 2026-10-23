@@ -9,6 +9,9 @@ router.get("/", notifications.list);
 router.get("/prefs", notifications.getPrefs);
 router.patch("/prefs", notifications.updatePrefs);
 router.post("/read-all", notifications.markAllRead);
+router.get("/push/config", notifications.pushConfig);
+router.post("/push/subscribe", notifications.pushSubscribe);
+router.post("/push/unsubscribe", notifications.pushUnsubscribe);
 router.post("/:id/read", notifications.markRead);
 
 export default router;

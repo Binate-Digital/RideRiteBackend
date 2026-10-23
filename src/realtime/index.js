@@ -25,6 +25,10 @@ import { Trip } from "../models/Trip.js";
  *                     a request offered exclusively to this driver (dispatch)
  *   ride:closed       { tripId, reason? }           offer gone (taken, cancelled,
  *                                                    declined, timed out)
+ *   chauffeur:open    { bookingId, vehicleType, startAt }   (drivers) a scheduled
+ *                                                    private-driver booking was paid
+ *   chauffeur:closed  { bookingId }                  (drivers) taken or cancelled
+ *   chauffeur:update  { booking }                    rider / assigned driver: status change
  */
 
 let io = null;
@@ -93,6 +97,11 @@ function emit(room, event, payload) {
 
 export function emitToUser(userId, event, payload) {
   if (userId) emit(`user:${userId}`, event, payload);
+}
+
+/** Every connected driver (the client re-fetches and filters by its own eligibility). */
+export function emitToDrivers(event, payload) {
+  emit("drivers", event, payload);
 }
 
 /** Push a trip's latest state to its room and to the rider's / driver's own sockets. */

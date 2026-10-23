@@ -21,6 +21,7 @@ import { declineOffer } from "../utils/dispatch.js";
 import { driverEarningsSummary } from "../utils/earnings.js";
 import { DriverPayout } from "../models/DriverPayout.js";
 import { env as appEnv } from "../config/env.js";
+import { driverCardsFor } from "../utils/tripDrivers.js";
 
 /** Seeded QA accounts (scripts/seed-test-accounts*) use this email domain. */
 const TEST_ACCOUNT_DOMAIN = "@riderite.test";
@@ -49,10 +50,13 @@ async function getOrCreateProfile(user) {
 export const getProfile = asyncHandler(async (req, res) => {
   const profile = await getOrCreateProfile(req.user);
   const subscriptionActive = await driverHasActiveSubscription(req.user._id);
+  // Same average riders see on the driver card (completed, rated trips)
+  const card = (await driverCardsFor([req.user._id])).get(req.user._id.toString());
   res.json({
     ok: true,
     user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
+    rating: card?.rating ?? { average: null, count: 0 },
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
     testTools: testToolsEnabled(req.user),
   });
@@ -255,6 +259,7 @@ export const getEarnings = asyncHandler(async (req, res) => {
     trips: entries.filter((e) => e.type === "trip").map(row),
     cancellationFees: entries.filter((e) => e.type === "cancellation_fee").map(row),
     rentals: entries.filter((e) => e.type === "rental").map(row),
+    chauffeur: entries.filter((e) => e.type === "chauffeur").map(row),
     bonuses: entries.filter((e) => e.type === "bonus").map(row),
     adjustments: entries.filter((e) => e.type === "adjustment").map(row),
     deductions: entries.filter((e) => e.type === "deduction").map(row),

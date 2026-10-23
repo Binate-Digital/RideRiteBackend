@@ -5,10 +5,11 @@ import { User } from "../models/User.js";
 import { env } from "../config/env.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { cancelOpenIntent, recordIntentSucceeded } from "./checkout.js";
-import { recordRentalOwnerEarning } from "./earnings.js";
+import { adjustRentalOwnerEarning, recordRentalOwnerEarning } from "./earnings.js";
 import { refundPayment } from "./refunds.js";
 import { Payment } from "../models/Payment.js";
-import { rentalReceiptEmail, sendMail } from "./mailer.js";
+import { rentalReceiptEmail } from "./mailer.js";
+import { cancellationRefund, money, settleBookingRefund } from "./bookingRefunds.js";
 
 const DAY_MS = 86400000;
 
@@ -19,7 +20,7 @@ export function toUtcDay(value) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
-const dayKey = (d) => d.toISOString().slice(0, 10);
+export const dayKey = (d) => d.toISOString().slice(0, 10);
 
 /** Calendar days a rental occupies: pickup day up to (not including) the return day. */
 export function rentalDays(startDate, endDate) {
@@ -167,11 +168,10 @@ export async function confirmRentalPaid(bookingId, { paymentIntentId, provider }
     User.findById(booking.renterId).select("fullName email"),
     RentalListing.findById(booking.listingId),
   ]);
-  if (renter?.email) {
-    await sendMail({ to: renter.email, ...rentalReceiptEmail({ fullName: renter.fullName, booking, listing }) });
-  }
   try {
-    const { notifyUser } = await import("../controllers/notifications.controller.js");
+    const { emailUser, notifyUser } = await import("../controllers/notifications.controller.js");
+    // Receipt = "Payments & receipts" category (respects the rider's prefs)
+    await emailUser(booking.renterId, "payment", rentalReceiptEmail({ fullName: renter?.fullName, booking, listing }));
     await notifyUser(booking.renterId, {
       category: "rental",
       title: "Rental confirmed",
@@ -197,7 +197,136 @@ export async function failRentalPayment(bookingId, paymentIntentId) {
   if (paymentIntentId) {
     await Payment.updateMany({ stripePaymentIntentId: paymentIntentId }, { $set: { status: "failed" } });
   }
-  return expireRentalHold(bookingId, { paymentFailed: true });
+  const booking = await expireRentalHold(bookingId, { paymentFailed: true });
+  if (booking) {
+    const { notifyUser } = await import("../controllers/notifications.controller.js");
+    await notifyUser(booking.renterId, {
+      category: "payment",
+      title: "Rental payment failed",
+      body: `Your card was declined for ${money(booking.totalCents)}. The dates were released — book again to retry.`,
+      data: { rentalBookingId: booking._id.toString(), href: "/rentals" },
+      email: true,
+    });
+  }
+  return booking;
+}
+
+/** The refund policy a renter would get cancelling `booking` right now. */
+export function rentalCancelQuote(booking, now = new Date()) {
+  return cancellationRefund({
+    paidCents: booking.totalCents,
+    startsAt: booking.startDate,
+    fullRefundHours: env.rentalFullRefundHours,
+    lateRefundPercent: env.rentalLateRefundPercent,
+    now,
+  });
+}
+
+/**
+ * Renter cancels a paid rental before pickup: refund per policy (full ≥ RENTAL_FULL_REFUND_HOURS
+ * before the start, else RENTAL_LATE_CANCEL_REFUND_PERCENT), release the days, rescale the
+ * P2P owner's earning to what the platform keeps, and notify renter and owner.
+ */
+export async function cancelPaidRental(booking, now = new Date()) {
+  if (!booking.paid || booking.status !== "confirmed") {
+    throw httpError(400, "Only a confirmed rental can be cancelled", { code: "NOT_CANCELLABLE" });
+  }
+  if (now >= booking.startDate) {
+    throw httpError(400, "This rental has already started and can't be cancelled", { code: "ALREADY_STARTED" });
+  }
+  const policy = rentalCancelQuote(booking, now);
+  const cancelled = await RentalBooking.findOneAndUpdate(
+    { _id: booking._id, status: "confirmed", paid: true },
+    {
+      $set: {
+        status: "cancelled",
+        cancelledAt: now,
+        refundCents: policy.refundCents,
+        refundPercent: policy.percent,
+      },
+    },
+    { new: true },
+  );
+  if (!cancelled) throw httpError(409, "The booking just changed — refresh and try again");
+  await releaseRentalDays(cancelled._id);
+  await adjustRentalOwnerEarning(cancelled, cancelled.subtotalCents - policy.refundCents).catch((err) =>
+    console.error(`[earnings] rental ${cancelled._id} owner adjustment failed:`, err.message),
+  );
+  const settled = policy.refundCents > 0 ? await settleBookingRefund(RentalBooking, "rental", cancelled._id) : null;
+  const finalBooking = settled?.booking || (await RentalBooking.findById(cancelled._id));
+
+  const listing = await RentalListing.findById(cancelled.listingId).select("title");
+  const { notifyUser } = await import("../controllers/notifications.controller.js");
+  const refundLine =
+    policy.refundCents > 0
+      ? `${money(policy.refundCents)} (${policy.percent}%) is being refunded to your card.`
+      : "No refund applies under the cancellation policy.";
+  await notifyUser(cancelled.renterId, {
+    category: "rental",
+    title: "Rental cancelled",
+    body: `${listing?.title || "Your rental"} · ${dayKey(cancelled.startDate)} → ${dayKey(cancelled.endDate)}. ${refundLine}`,
+    data: { rentalBookingId: cancelled._id.toString(), href: "/rentals", refundCents: policy.refundCents },
+    email: true,
+  });
+  if (cancelled.source === "peer" && String(cancelled.ownerId) !== String(cancelled.renterId)) {
+    await notifyUser(cancelled.ownerId, {
+      category: "rental",
+      title: "A rental of your vehicle was cancelled",
+      body: `${listing?.title || "Listing"} · ${dayKey(cancelled.startDate)} → ${dayKey(cancelled.endDate)} — the dates are open again.`,
+      data: { rentalBookingId: cancelled._id.toString(), href: "/driver" },
+      email: true,
+    });
+  }
+  return { booking: finalBooking, policy };
+}
+
+/**
+ * Booked days of a listing between `from` and `to` (UTC days, to exclusive), from day slots
+ * (paid bookings and live unpaid holds) and bookings that predate slots. Returns sorted
+ * day keys and merged [start, end) ranges.
+ */
+export async function bookedDaysForListing(listingId, from, to) {
+  const keys = new Set(
+    (
+      await RentalDaySlot.find({ listingId, day: { $gte: dayKey(from), $lt: dayKey(to) } })
+        .select("day")
+        .lean()
+    ).map((s) => s.day),
+  );
+  const legacy = await RentalBooking.find({
+    listingId,
+    status: { $in: ["confirmed", "active"] },
+    startDate: { $lt: to },
+    endDate: { $gt: from },
+  })
+    .select("startDate endDate")
+    .lean();
+  for (const b of legacy) {
+    for (const k of rentalDays(new Date(Math.max(b.startDate, from)), new Date(Math.min(b.endDate, to)))) keys.add(k);
+  }
+  const days = [...keys].sort();
+  const ranges = [];
+  for (const d of days) {
+    const last = ranges[ranges.length - 1];
+    const next = dayKey(new Date(Date.parse(`${d}T00:00:00Z`) + DAY_MS));
+    if (last && last.end === d) last.end = next;
+    else ranges.push({ start: d, end: next });
+  }
+  return { days, ranges };
+}
+
+/** Listing ids with any booked day in [start, end) — used by the availability filter. */
+export async function listingsBookedBetween(startDate, endDate) {
+  const days = rentalDays(startDate, endDate);
+  const [slotted, legacy] = await Promise.all([
+    RentalDaySlot.distinct("listingId", { day: { $in: days } }),
+    RentalBooking.distinct("listingId", {
+      status: { $in: ["confirmed", "active"] },
+      startDate: { $lt: endDate },
+      endDate: { $gt: startDate },
+    }),
+  ]);
+  return [...slotted, ...legacy];
 }
 
 export async function sweepExpiredRentalHolds(now = new Date()) {
