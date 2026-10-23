@@ -3,6 +3,7 @@ import { DriverProfile } from "../models/DriverProfile.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { findNearbyOnlineDrivers, etaMinutesForMiles } from "../utils/nearbyDrivers.js";
+import { driverCardsFor } from "../utils/tripDrivers.js";
 
 /** GET /api/public/trips/:id/track — shareable live trip status (no auth) */
 export const trackTrip = asyncHandler(async (req, res) => {
@@ -13,7 +14,12 @@ export const trackTrip = asyncHandler(async (req, res) => {
 
   let driverLocation = null;
   if (trip.driverId) {
-    const profile = await DriverProfile.findOne({ userId: trip.driverId }).select("lastLocation vehicleMake vehicleModel vehiclePlate vehicleColor");
+    const [profile, cards] = await Promise.all([
+      DriverProfile.findOne({ userId: trip.driverId }).select(
+        "lastLocation vehicleMake vehicleModel vehiclePlate vehicleColor",
+      ),
+      driverCardsFor([trip.driverId]),
+    ]);
     if (profile?.lastLocation?.lat != null) {
       driverLocation = {
         lat: profile.lastLocation.lat,
@@ -46,6 +52,7 @@ export const trackTrip = asyncHandler(async (req, res) => {
               color: profile.vehicleColor,
             }
           : null,
+        driver: cards.get(String(trip.driverId)) || null,
         driverLocation,
       },
     });
@@ -65,6 +72,7 @@ export const trackTrip = asyncHandler(async (req, res) => {
       pickupCoords: trip.pickupCoords,
       destinationCoords: trip.destinationCoords,
       vehicle: null,
+      driver: null,
       driverLocation: null,
     },
   });

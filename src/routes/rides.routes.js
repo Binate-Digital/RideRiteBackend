@@ -28,6 +28,7 @@ router.get("/:id", requireAuth, requireVerified, rides.getOne);
 router.get("/:id/messages", requireAuth, requireVerified, tripChat.listMessages);
 router.post("/:id/messages", requireAuth, requireVerified, writeLimiter, tripChat.sendMessage);
 router.post("/:id/cancel", requireAuth, requireVerified, writeLimiter, rides.cancel);
+router.post("/:id/retry", requireAuth, requireVerified, writeLimiter, rides.retry);
 router.post("/:id/accept", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.accept);
 router.post("/:id/reject", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.reject);
 router.patch("/:id/status", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.updateStatus);

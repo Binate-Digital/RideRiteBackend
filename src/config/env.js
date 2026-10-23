@@ -64,4 +64,11 @@ export const env = {
       (process.env.NODE_ENV || "development") !== "production"),
   /** QA helpers (e.g. driver "Simulate drive") for every account, not only @riderite.test ones. */
   enableTestTools: String(process.env.ENABLE_TEST_TOOLS || "").toLowerCase() === "true",
+
+  /** Ride dispatch: how long one driver has to accept before the next nearest is offered the trip. */
+  dispatchOfferSeconds: Math.max(3, Number(process.env.DISPATCH_OFFER_SECONDS) || 30),
+  /** Give up and tell the rider "no drivers" after this long without an acceptance. */
+  dispatchMaxMinutes: Math.max(1, Number(process.env.DISPATCH_MAX_MINUTES) || 5),
+  /** How often the sweeper advances expired offers (covers restarts / lost timers). */
+  dispatchSweepSeconds: Math.max(1, Number(process.env.DISPATCH_SWEEP_SECONDS) || 5),
 };

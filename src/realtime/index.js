@@ -21,7 +21,10 @@ import { Trip } from "../models/Trip.js";
  *   trip:update       { trip }                      status / fare / cancel changes
  *   driver:location   { tripId, lat, lng, updatedAt }
  *   chat:message      { tripId, message }
- *   ride:closed       { tripId }                    no longer open for drivers
+ *   ride:offer        { trip, offerExpiresAt, offerSeconds, serverNow }
+ *                     a request offered exclusively to this driver (dispatch)
+ *   ride:closed       { tripId, reason? }           offer gone (taken, cancelled,
+ *                                                    declined, timed out)
  */
 
 let io = null;
@@ -101,7 +104,7 @@ export function broadcastTrip(trip) {
   io.to(rooms).emit("trip:update", payload);
 }
 
-/** Tell every driver a request left the open pool (accepted, cancelled, expired). */
+/** Tell every driver a request is gone (accepted, cancelled) so any open offer closes. */
 export function broadcastRideClosed(tripId) {
   emit("drivers", "ride:closed", { tripId: String(tripId) });
 }

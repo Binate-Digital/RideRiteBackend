@@ -7,6 +7,7 @@ import { httpError } from "../middleware/errorHandler.js";
 import { env } from "../config/env.js";
 import { ensureStripeCustomer, getStripe, isStripeMock } from "../lib/stripe.js";
 import { broadcastTrip } from "../realtime/index.js";
+import { startDispatch } from "../utils/dispatch.js";
 
 const CARD_LIKE = new Set(["card", "cashapp", "paypal"]);
 const OFFLINE = new Set(["cash", "venmo", "zelle"]);
@@ -56,12 +57,8 @@ async function markTripPaid(trip, { provider, paymentIntentId, paymentMethodType
     { upsert: true, new: true },
   );
 
-  try {
-    const { notifyEligibleDrivers } = await import("./notifications.controller.js");
-    await notifyEligibleDrivers(trip);
-  } catch {
-    /* non-fatal */
-  }
+  // Offer the ride to the nearest driver (no-op if dispatch already started)
+  if (trip.status === "requested") await startDispatch(trip);
 
   return trip;
 }

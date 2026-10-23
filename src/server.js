@@ -3,6 +3,7 @@ import { createApp } from "./app.js";
 import { connectDb } from "./config/db.js";
 import { env } from "./config/env.js";
 import { initRealtime } from "./realtime/index.js";
+import { startDispatchSweeper } from "./utils/dispatch.js";
 
 async function main() {
   await connectDb();
@@ -10,6 +11,8 @@ async function main() {
   // One HTTP server for both the REST API and Socket.IO (same port, /socket.io path)
   const server = http.createServer(app);
   initRealtime(server);
+  // Advances ride offers whose timer was lost (restart / crash)
+  startDispatchSweeper();
   server.listen(env.port, () => {
     console.log(`[server] ${env.appName} API listening on http://localhost:${env.port}`);
     console.log(`[server] health → http://localhost:${env.port}/health`);

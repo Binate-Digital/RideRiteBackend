@@ -9,6 +9,8 @@ export const TRIP_STATUSES = [
   "in_progress",
   "completed",
   "cancelled",
+  // Dispatch ran out of drivers (everyone declined / timed out, or DISPATCH_MAX_MINUTES passed)
+  "no_drivers",
 ];
 
 const coordsSchema = new mongoose.Schema(
@@ -72,7 +74,16 @@ const tripSchema = new mongoose.Schema(
     stripeClientSecret: { type: String, default: null, select: false },
     paymentStatus: {
       type: String,
-      enum: ["unpaid", "pending", "paid", "refunded", "partial_refund", "failed"],
+      enum: [
+        "unpaid",
+        "pending",
+        "paid",
+        // Card was charged but no driver took the ride; the refund job issues the Stripe refund
+        "refund_pending",
+        "refunded",
+        "partial_refund",
+        "failed",
+      ],
       default: "unpaid",
       index: true,
     },
@@ -81,6 +92,23 @@ const tripSchema = new mongoose.Schema(
     refundCents: { type: Number, default: 0 },
     cancelledAt: { type: Date, default: null },
     cancelReason: { type: String, default: null },
+    // Dispatch: the trip is offered to one driver at a time, nearest first
+    offeredDriverId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    offeredAt: { type: Date, default: null },
+    offerExpiresAt: { type: Date, default: null },
+    /** Drivers who declined or let the offer time out — never offered this trip again */
+    dispatchDeclinedDriverIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+      default: [],
+    },
+    dispatchAttempts: { type: Number, default: 0 },
+    dispatchStartedAt: { type: Date, default: null },
+    noDriversAt: { type: Date, default: null },
     // Lifecycle timestamps
     requestedAt: { type: Date, default: Date.now },
     acceptedAt: { type: Date, default: null },
@@ -96,6 +124,10 @@ const tripSchema = new mongoose.Schema(
 );
 
 tripSchema.index({ status: 1, vehicleType: 1, createdAt: -1 });
+// Sweeper: find offers whose window has passed
+tripSchema.index({ status: 1, offerExpiresAt: 1 });
+// Driver cards: rating average over completed trips
+tripSchema.index({ driverId: 1, status: 1, riderRating: 1 });
 
 tripSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
@@ -131,6 +163,10 @@ tripSchema.methods.toSafeJSON = function toSafeJSON() {
     refundCents: this.refundCents,
     cancelledAt: this.cancelledAt,
     cancelReason: this.cancelReason,
+    offerExpiresAt: this.offerExpiresAt,
+    dispatchAttempts: this.dispatchAttempts,
+    dispatchStartedAt: this.dispatchStartedAt,
+    noDriversAt: this.noDriversAt,
     requestedAt: this.requestedAt,
     acceptedAt: this.acceptedAt,
     enRouteAt: this.enRouteAt,

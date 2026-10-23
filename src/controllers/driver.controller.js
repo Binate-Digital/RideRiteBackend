@@ -16,6 +16,8 @@ import {
 } from "../utils/driverReadiness.js";
 import { driverHasActiveSubscription } from "./subscriptions.controller.js";
 import { relayDriverLocation } from "../realtime/index.js";
+import { Trip } from "../models/Trip.js";
+import { declineOffer } from "../utils/dispatch.js";
 
 /** Seeded QA accounts (scripts/seed-test-accounts*) use this email domain. */
 const TEST_ACCOUNT_DOMAIN = "@riderite.test";
@@ -183,6 +185,9 @@ export const goOffline = asyncHandler(async (req, res) => {
   const profile = await getOrCreateProfile(req.user);
   profile.isOnline = false;
   await profile.save();
+  // An offline driver can't take the ride they're being offered — pass it on now
+  const holding = await Trip.find({ status: "requested", offeredDriverId: req.user._id });
+  for (const trip of holding) await declineOffer(trip, req.user._id, "offline");
   res.json({ ok: true, message: "You are offline", driver: profile.toSafeJSON() });
 });
 

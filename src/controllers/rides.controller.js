@@ -21,10 +21,18 @@ import {
   canDriverHandleRides,
   driverReadinessPayload,
 } from "../utils/driverReadiness.js";
+import {
+  DISPATCH_RADIUS_MILES,
+  declineOffer,
+  pickupMilesFrom,
+  startDispatch,
+  stopDispatch,
+} from "../utils/dispatch.js";
+import { tripWithDriver, tripsWithDrivers } from "../utils/tripDrivers.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
-/** How far from the pickup a driver may be to see / be offered a request. */
-const DISPATCH_RADIUS_MILES = 100;
+/** Rider has a ride in flight — can't book another until it ends. */
+const ACTIVE_RIDER_STATUSES = ["requested", "accepted", "en_route", "arrived", "in_progress"];
 
 /** Resolve an optional promo; a bad code is a 400 so the rider sees why. */
 async function promoForRequest(promoCode) {
@@ -85,7 +93,7 @@ export const book = asyncHandler(async (req, res) => {
   // Block only real in-flight trips (already dispatched / matched)
   const active = await Trip.findOne({
     riderId: req.user._id,
-    status: { $in: ["requested", "accepted", "en_route", "arrived", "in_progress"] },
+    status: { $in: ACTIVE_RIDER_STATUSES },
   });
   if (active) {
     throw httpError(409, "You already have an active ride", {
@@ -113,7 +121,7 @@ export const book = asyncHandler(async (req, res) => {
   if (nearby.length === 0) {
     throw httpError(
       409,
-      `No online ${data.vehicle} drivers within 100 miles of your pickup. Try another vehicle or wait until a driver comes online.`,
+      `No online ${data.vehicle} drivers within ${DISPATCH_RADIUS_MILES} miles of your pickup. Try another vehicle or wait until a driver comes online.`,
       { code: "NO_NEARBY_DRIVERS" },
     );
   }
@@ -154,21 +162,15 @@ export const book = asyncHandler(async (req, res) => {
     requestedAt: isOffline ? new Date() : null,
   });
 
-  if (isOffline) {
-    try {
-      const { notifyEligibleDrivers } = await import("./notifications.controller.js");
-      await notifyEligibleDrivers(trip);
-    } catch {
-      /* non-fatal */
-    }
-  }
+  // Pay on pickup: offer to the nearest driver now. Card rides start after payment succeeds.
+  const dispatched = isOffline ? await startDispatch(trip) : null;
 
   res.status(201).json({
     ok: true,
     message: isOffline
       ? "Ride requested. Waiting for a driver."
       : "Complete payment to dispatch your ride to nearby drivers.",
-    trip: trip.toSafeJSON(),
+    trip: (dispatched || trip).toSafeJSON(),
     note: isOffline
       ? "Pay on pickup selected — no upfront charge."
       : "Drivers are notified only after payment succeeds.",
@@ -184,7 +186,7 @@ export const listMine = asyncHandler(async (req, res) => {
   const trips = await Trip.find(filter).sort({ createdAt: -1 }).limit(50);
   res.json({
     ok: true,
-    trips: trips.map((t) => t.toSafeJSON()),
+    trips: await tripsWithDrivers(trips),
   });
 });
 
@@ -199,7 +201,7 @@ export const getOne = asyncHandler(async (req, res) => {
     req.user.role === "admin";
   if (!isParty) throw httpError(403, "Not authorized to view this trip");
 
-  res.json({ ok: true, trip: trip.toSafeJSON() });
+  res.json({ ok: true, trip: await tripWithDriver(trip) });
 });
 
 export const cancel = asyncHandler(async (req, res) => {
@@ -210,6 +212,9 @@ export const cancel = asyncHandler(async (req, res) => {
     throw httpError(403, "Only the rider can cancel this trip");
   }
   if (trip.status === "cancelled") throw httpError(400, "Trip already cancelled");
+  if (trip.status === "no_drivers" && trip.paymentStatus === "refunded") {
+    throw httpError(400, "Trip already ended and was refunded");
+  }
   if (["in_progress", "completed"].includes(trip.status)) {
     throw httpError(400, "Cannot cancel a ride that is already in progress or completed");
   }
@@ -236,13 +241,27 @@ export const cancel = asyncHandler(async (req, res) => {
     message = `Driver was already en route. $${(feeCents / 100).toFixed(2)} cancellation fee applied.`;
   }
 
-  trip.status = "cancelled";
-  trip.cancelledAt = new Date();
-  trip.cancelReason = reason || null;
-  trip.cancelFeeCents = feeCents;
-  trip.refundCents = refundCents;
-  await trip.save();
-  broadcastTrip(trip);
+  // Conditional on the state we priced the cancel for: an accept or a dispatch
+  // move landing in between makes this a 409 instead of silently overwriting it.
+  const cancelled = await Trip.findOneAndUpdate(
+    { _id: trip._id, status: trip.status, driverId: trip.driverId ?? null },
+    {
+      $set: {
+        status: "cancelled",
+        cancelledAt: new Date(),
+        cancelReason: reason || null,
+        cancelFeeCents: feeCents,
+        refundCents,
+        offeredDriverId: null,
+        offerExpiresAt: null,
+      },
+    },
+    { new: true },
+  );
+  if (!cancelled) throw httpError(409, "The ride just changed — refresh and try again");
+  stopDispatch(trip._id);
+  broadcastTrip(cancelled);
+  // Also closes the radar of a driver holding the offer right now
   broadcastRideClosed(trip._id);
 
   if (trip.driverId) {
@@ -267,11 +286,71 @@ export const cancel = asyncHandler(async (req, res) => {
     feeCents,
     refundCents,
     message,
-    trip: trip.toSafeJSON(),
+    trip: cancelled.toSafeJSON(),
   });
 });
 
-/** Open requests for online drivers matching vehicle type */
+/**
+ * POST /api/rides/:id/retry — the rider searches again after "no drivers".
+ * A card payment that hasn't been refunded yet is reused.
+ */
+export const retry = asyncHandler(async (req, res) => {
+  const trip = await Trip.findById(req.params.id);
+  if (!trip) throw httpError(404, "Trip not found");
+  if (trip.riderId.toString() !== req.user._id.toString()) {
+    throw httpError(403, "Only the rider can re-request this trip");
+  }
+  if (trip.status !== "no_drivers") {
+    throw httpError(400, "Only a ride that found no driver can be re-requested");
+  }
+  const isOffline = OFFLINE_PAY.has(trip.paymentMethod);
+  if (!isOffline && trip.paymentStatus !== "refund_pending") {
+    throw httpError(409, "This payment was already refunded — book a new ride", {
+      code: "REBOOK_REQUIRED",
+    });
+  }
+  const active = await Trip.findOne({
+    riderId: req.user._id,
+    status: { $in: ACTIVE_RIDER_STATUSES },
+  });
+  if (active) {
+    throw httpError(409, "You already have an active ride", { tripId: active._id.toString() });
+  }
+
+  const reset = await Trip.findOneAndUpdate(
+    { _id: trip._id, status: "no_drivers", paymentStatus: trip.paymentStatus },
+    {
+      $set: {
+        status: "requested",
+        requestedAt: new Date(),
+        paymentStatus: isOffline ? trip.paymentStatus : "paid",
+        offeredDriverId: null,
+        offeredAt: null,
+        offerExpiresAt: null,
+        dispatchDeclinedDriverIds: [],
+        dispatchAttempts: 0,
+        dispatchStartedAt: null,
+        noDriversAt: null,
+      },
+    },
+    { new: true },
+  );
+  if (!reset) throw httpError(409, "The ride just changed — refresh and try again");
+  broadcastTrip(reset);
+  const dispatched = await startDispatch(reset);
+  const latest = dispatched || (await Trip.findById(trip._id));
+
+  res.json({
+    ok: true,
+    message:
+      latest.status === "no_drivers"
+        ? "Still no drivers available nearby."
+        : "Searching for a driver again.",
+    trip: latest.toSafeJSON(),
+  });
+});
+
+/** The request currently offered to this driver (dispatch offers one driver at a time). */
 export const listOpen = asyncHandler(async (req, res) => {
   const profile = await DriverProfile.findOne({ userId: req.user._id });
   if (!profile) throw httpError(400, "Complete driver profile first");
@@ -282,38 +361,22 @@ export const listOpen = asyncHandler(async (req, res) => {
     throw httpError(403, "Active driver subscription required");
   }
 
-  // Only show rides ready for drivers: offline (pay on pickup) or card already paid.
-  const trips = await Trip.find({
+  // Requests are offered exclusively, nearest driver first — a driver only sees
+  // the trip currently offered to them, until its offer window ends.
+  const offered = await Trip.find({
     status: "requested",
     driverId: null,
-    vehicleType: profile.vehicleType,
-    $or: [
-      { paid: true },
-      { paymentMethod: { $in: ["cash", "venmo", "zelle"] } },
-    ],
-  })
-    .sort({ createdAt: 1 })
-    .limit(100);
-
-  // Same radius riders are matched within — a driver only sees pickups near them,
-  // nearest first. Without a location we can't judge distance, so show none.
-  const here = profile.lastLocation;
-  const { haversineMiles } = await import("../utils/nearbyDrivers.js");
-  const nearby =
-    here?.lat == null || here?.lng == null
-      ? []
-      : trips
-          .filter((t) => t.pickupCoords?.lat != null && t.pickupCoords?.lng != null)
-          .map((t) => ({ t, miles: haversineMiles(here, t.pickupCoords) }))
-          .filter((x) => x.miles <= DISPATCH_RADIUS_MILES)
-          .sort((a, b) => a.miles - b.miles)
-          .slice(0, 20);
+    offeredDriverId: req.user._id,
+    offerExpiresAt: { $gt: new Date() },
+  }).limit(5);
 
   res.json({
     ok: true,
-    trips: nearby.map(({ t, miles }) => ({
+    // Lets the client count down from the server's clock
+    serverNow: new Date(),
+    trips: offered.map((t) => ({
       ...t.toSafeJSON(),
-      pickupDistanceMiles: Math.round(miles * 10) / 10,
+      pickupDistanceMiles: pickupMilesFrom(profile.lastLocation, t),
     })),
   });
 });
@@ -340,26 +403,34 @@ export const accept = asyncHandler(async (req, res) => {
   });
   if (busy) throw httpError(409, "You already have an active trip");
 
+  // Only the driver holding the offer, and only inside the offer window
   const trip = await Trip.findOneAndUpdate(
     {
       _id: req.params.id,
       status: "requested",
       driverId: null,
       vehicleType: profile.vehicleType,
+      offeredDriverId: req.user._id,
+      offerExpiresAt: { $gt: new Date() },
     },
     {
       $set: {
         driverId: req.user._id,
         status: "accepted",
         acceptedAt: new Date(),
+        offeredDriverId: null,
+        offerExpiresAt: null,
       },
     },
     { new: true },
   );
 
   if (!trip) {
-    throw httpError(409, "Trip not available (already taken or wrong vehicle type)");
+    throw httpError(409, "This ride is no longer offered to you (expired, taken or cancelled)", {
+      code: "OFFER_UNAVAILABLE",
+    });
   }
+  stopDispatch(trip._id);
   broadcastTrip(trip);
   broadcastRideClosed(trip._id);
 
@@ -378,7 +449,7 @@ export const accept = asyncHandler(async (req, res) => {
   res.json({
     ok: true,
     message: "Ride accepted",
-    trip: trip.toSafeJSON(),
+    trip: await tripWithDriver(trip),
   });
 });
 
@@ -396,15 +467,17 @@ export const reject = asyncHandler(async (req, res) => {
         "Complete Stripe Connect and driver verification before handling rides",
     );
   }
-  // Soft reject for alpha: driver just ignores; we acknowledge so client can drop it
   const trip = await Trip.findById(req.params.id);
   if (!trip) throw httpError(404, "Trip not found");
   if (trip.status !== "requested") {
     throw httpError(400, "Trip is no longer open");
   }
+  // Declining moves the offer to the next nearest driver right away. If the
+  // offer already timed out, the decline is simply acknowledged.
+  await declineOffer(trip, req.user._id, "rejected");
   res.json({
     ok: true,
-    message: "Request declined. It remains open for other drivers.",
+    message: "Request declined. It will be offered to another driver.",
     tripId: trip._id.toString(),
   });
 });
