@@ -48,6 +48,10 @@ async function activateMock(user, plan) {
     },
     { upsert: true, new: true },
   );
+  if (!sub.firstActiveAt) {
+    sub.firstActiveAt = now;
+    await sub.save();
+  }
   await Payment.create({
     userId: user._id,
     purpose: "subscription",

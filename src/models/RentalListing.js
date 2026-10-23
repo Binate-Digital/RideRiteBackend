@@ -26,6 +26,15 @@ const rentalListingSchema = new mongoose.Schema(
     },
     availableFrom: { type: Date, default: null },
     availableTo: { type: Date, default: null },
+    /** Owner-blocked calendar days (UTC YYYY-MM-DD) — never bookable (TRD 5.8) */
+    blockedDays: { type: [String], default: [] },
+    /**
+     * Daily rate admin last approved. An owner price change of more than
+     * RENTAL_PRICE_REVIEW_CHANGE_PERCENT from it sends an approved listing back to review.
+     */
+    approvedDailyRateCents: { type: Number, default: null },
+    /** Why a listing is (back) in review: new | price_change | details_changed */
+    reviewReason: { type: String, default: null },
   },
   { timestamps: true },
 );
@@ -52,6 +61,9 @@ rentalListingSchema.methods.toSafeJSON = function toSafeJSON() {
     status: this.status,
     availableFrom: this.availableFrom,
     availableTo: this.availableTo,
+    blockedDays: this.blockedDays || [],
+    approvedDailyRateCents: this.approvedDailyRateCents,
+    reviewReason: this.reviewReason,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

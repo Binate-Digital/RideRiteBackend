@@ -11,7 +11,7 @@ import mongoose from "mongoose";
  * rental:           a peer-to-peer listing owner's share (subtotal − RENTAL_COMMISSION_RATE).
  * chauffeur:        the assigned private driver's share of a completed chauffeur booking
  *                   (total − CHAUFFEUR_COMMISSION_RATE).
- * bonus:            placeholder for the monthly bonus program (Phase 4).
+ * bonus:            an admin-approved monthly bonus (TRD 5.5), paid with the next payout.
  * adjustment:       admin correction (+/−).
  * deduction:        money the driver owes, e.g. a cash fare they collected (fare − their net).
  */
@@ -24,6 +24,7 @@ const driverEarningSchema = new mongoose.Schema(
     tripId: { type: mongoose.Schema.Types.ObjectId, ref: "Trip", default: null },
     rentalBookingId: { type: mongoose.Schema.Types.ObjectId, ref: "RentalBooking", default: null },
     chauffeurBookingId: { type: mongoose.Schema.Types.ObjectId, ref: "ChauffeurBooking", default: null },
+    bonusId: { type: mongoose.Schema.Types.ObjectId, ref: "DriverBonus", default: null },
     grossCents: { type: Number, default: 0 },
     commissionCents: { type: Number, default: 0 },
     /** What this entry adds to (or, if negative, removes from) the driver's payout balance */
@@ -60,6 +61,11 @@ driverEarningSchema.index(
   { unique: true, partialFilterExpression: { chauffeurBookingId: { $type: "objectId" } } },
 );
 
+driverEarningSchema.index(
+  { bonusId: 1, type: 1 },
+  { unique: true, partialFilterExpression: { bonusId: { $type: "objectId" } } },
+);
+
 driverEarningSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
     id: this._id.toString(),
@@ -68,6 +74,7 @@ driverEarningSchema.methods.toSafeJSON = function toSafeJSON() {
     tripId: this.tripId ? this.tripId.toString() : null,
     rentalBookingId: this.rentalBookingId ? this.rentalBookingId.toString() : null,
     chauffeurBookingId: this.chauffeurBookingId ? this.chauffeurBookingId.toString() : null,
+    bonusId: this.bonusId ? this.bonusId.toString() : null,
     grossCents: this.grossCents,
     commissionCents: this.commissionCents,
     netCents: this.netCents,

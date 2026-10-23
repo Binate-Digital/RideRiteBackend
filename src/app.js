@@ -69,7 +69,7 @@ export function createApp() {
         rides: "POST /api/rides/*",
         driver: "GET /api/driver/*",
         payments: "POST /api/payments/rides/:id/intent | methods | webhook",
-        uploads: "POST /api/uploads/avatar | file | files | driver-docs",
+        uploads: "POST /api/uploads/avatar | file | files | driver-docs | photos",
         admin: "GET /api/admin/analytics | users | drivers | trips",
       },
     });

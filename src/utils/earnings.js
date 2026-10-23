@@ -1,4 +1,4 @@
-import { DriverEarning } from "../models/DriverEarning.js";
+import { DriverEarning, EARNING_TYPES } from "../models/DriverEarning.js";
 import { env } from "../config/env.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
@@ -24,7 +24,9 @@ async function insertOnce(doc) {
       ? { tripId: doc.tripId }
       : doc.chauffeurBookingId
         ? { chauffeurBookingId: doc.chauffeurBookingId }
-        : { rentalBookingId: doc.rentalBookingId };
+        : doc.bonusId
+          ? { bonusId: doc.bonusId }
+          : { rentalBookingId: doc.rentalBookingId };
     return DriverEarning.findOne({ ...key, type: doc.type });
   }
 }
@@ -149,38 +151,56 @@ export async function recordChauffeurEarning(booking) {
   });
 }
 
+/** Admin-approved monthly bonus → owed to the driver with the next payout. */
+export async function recordBonusEarning(bonus, description) {
+  return insertOnce({
+    driverId: bonus.userId,
+    type: "bonus",
+    bonusId: bonus._id,
+    grossCents: bonus.giftCardCents,
+    commissionCents: 0,
+    netCents: bonus.giftCardCents,
+    description,
+  });
+}
+
 function startOfTodayUtc(now = new Date()) {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
 /**
  * Driver earnings summary. "Earned" totals count what the driver made (trips net, fees,
- * rentals, bonuses, adjustments); deductions are listed separately and reduce the payout
- * balance, not the earnings.
+ * rentals, chauffeur, bonuses, adjustments); deductions are listed separately and reduce the
+ * payout balance, not the earnings. `byType` sums each ledger category (net), all time.
  */
-export async function driverEarningsSummary(driverId) {
+export async function driverEarningsSummary(driverId, now = new Date()) {
   const entries = await DriverEarning.find({ driverId, status: { $ne: "void" } })
     .sort({ earnedAt: -1 })
     .limit(1000);
-  const today = startOfTodayUtc().getTime();
-  const weekAgo = Date.now() - 7 * 86400000;
+  const today = startOfTodayUtc(now).getTime();
+  const weekAgo = now.getTime() - 7 * 86400000;
+  const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
   const totals = {
     todayCents: 0,
     weekCents: 0,
+    monthCents: 0,
     allTimeCents: 0,
     commissionCents: 0,
     deductionsCents: 0,
     pendingPayoutCents: 0,
     paidOutCents: 0,
+    byType: Object.fromEntries(EARNING_TYPES.map((t) => [t, 0])),
   };
   for (const e of entries) {
     const at = new Date(e.earnedAt).getTime();
+    totals.byType[e.type] = (totals.byType[e.type] || 0) + e.netCents;
     if (e.type === "deduction") {
       totals.deductionsCents += -e.netCents;
     } else {
       totals.allTimeCents += e.netCents;
       if (at >= today) totals.todayCents += e.netCents;
       if (at >= weekAgo) totals.weekCents += e.netCents;
+      if (at >= monthStart) totals.monthCents += e.netCents;
       totals.commissionCents += e.commissionCents || 0;
     }
     if (e.status === "pending" || e.status === "processing") totals.pendingPayoutCents += e.netCents;

@@ -7,6 +7,7 @@ import {
   uploadSingle,
   uploadMultiple,
   uploadFields,
+  uploadPhotos,
 } from "../middleware/upload.middleware.js";
 import * as uploads from "../controllers/uploads.controller.js";
 
@@ -31,14 +32,22 @@ router.post("/file", uploadSingle("file"), uploads.uploadFile);
 /** Multiple files: multipart field `files` */
 router.post("/files", uploadMultiple("files", 10), uploads.uploadFiles);
 
-/** Driver license images: fields `licenseFront`, `licenseBack` */
+/**
+ * Driver documents (image or PDF): `licenseFront`, `licenseBack`, `registrationDoc`,
+ * `insuranceDoc`. Returns URLs; PATCH /api/driver/verification saves them with expiry dates.
+ */
 router.post(
   "/driver-docs",
   uploadFields([
     { name: "licenseFront", maxCount: 1 },
     { name: "licenseBack", maxCount: 1 },
+    { name: "registrationDoc", maxCount: 1 },
+    { name: "insuranceDoc", maxCount: 1 },
   ]),
   uploads.uploadDriverDocs,
 );
+
+/** Rental listing photos: multipart field `photos` (up to 8 images) */
+router.post("/photos", uploadPhotos("photos", 8), uploads.uploadFiles);
 
 export default router;

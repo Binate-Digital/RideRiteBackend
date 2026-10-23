@@ -151,6 +151,43 @@ export const env = {
   /** Trip chat stays readable this long after the trip ends. */
   chatHistoryHours: nonNeg(process.env.CHAT_HISTORY_HOURS, 24),
 
+  /** Driver document expiry: notify this many days before (each once), block once expired. */
+  documentExpiryNoticeDays: list(process.env.DOCUMENT_EXPIRY_NOTICE_DAYS || "30,7,1")
+    .map(Number)
+    .filter((n) => Number.isFinite(n) && n >= 0)
+    .sort((a, b) => b - a),
+  /** Driver housekeeping (document expiry, bonus months, maintenance due, membership notices). */
+  // (capped below setInterval's 2^31 ms limit, ~24.8 days)
+  driverSweepMinutes: Math.min(35000, Math.max(1, Number(process.env.DRIVER_SWEEP_MINUTES) || 24 * 60)),
+  /** Membership that won't auto-renew: warn this many days before it ends. */
+  subscriptionExpiryNoticeDays: nonNeg(process.env.SUBSCRIPTION_EXPIRY_NOTICE_DAYS, 3),
+
+  /**
+   * Monthly bonus (TRD 5.5). A trip is on time when the driver arrived within the pickup ETA
+   * quoted at accept + the grace minutes. A month is eligible with at least BONUS_MIN_TRIPS
+   * completed trips, an on-time rate ≥ BONUS_MIN_ONTIME_RATE and a safe-driving score ≥
+   * BONUS_MIN_SAFE_SCORE; eligible months become a pending BONUS_AMOUNT_CENTS bonus for admin.
+   */
+  bonus: {
+    onTimeGraceMinutes: nonNeg(process.env.BONUS_ONTIME_GRACE_MINUTES, 5),
+    minTrips: Math.max(1, Number(process.env.BONUS_MIN_TRIPS) || 20),
+    minOnTimeRate: rate01(process.env.BONUS_MIN_ONTIME_RATE, 0.9),
+    minSafeScore: nonNeg(process.env.BONUS_MIN_SAFE_SCORE, 80),
+    amountCents: Math.max(0, Number(process.env.BONUS_AMOUNT_CENTS) || 10000),
+  },
+
+  /** Company-covered maintenance (TRD 5.6): intervals and how early a due service can be requested. */
+  maintenance: {
+    oilChangeMonths: Math.max(1, Number(process.env.MAINTENANCE_OIL_CHANGE_MONTHS) || 3),
+    inspectionMonths: Math.max(1, Number(process.env.MAINTENANCE_INSPECTION_MONTHS) || 12),
+    requestWindowDays: nonNeg(process.env.MAINTENANCE_REQUEST_WINDOW_DAYS, 14),
+  },
+
+  /** P2P owners may decline a paid booking (full refund) within this many hours of it being made. */
+  rentalOwnerDeclineHours: nonNeg(process.env.RENTAL_OWNER_DECLINE_HOURS, 12),
+  /** An active listing whose daily price changes by more than this % goes back to admin review. */
+  rentalPriceReviewPercent: nonNeg(process.env.RENTAL_PRICE_REVIEW_CHANGE_PERCENT, 50),
+
   /** Web push (VAPID). Unset → push is disabled and the web app hides the toggle. */
   vapid: {
     publicKey: process.env.VAPID_PUBLIC_KEY || "",
@@ -179,6 +216,12 @@ function testOnly(raw) {
 function percent(raw, fallback) {
   const n = Number(raw);
   return raw !== "" && raw != null && Number.isFinite(n) && n >= 0 && n <= 100 ? n : fallback;
+}
+
+/** 0..1 inclusive (unset → fallback). */
+function rate01(raw, fallback) {
+  const n = Number(raw);
+  return raw !== "" && raw != null && Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
 }
 
 function rate(raw, fallback) {

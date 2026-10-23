@@ -18,6 +18,8 @@ router.get("/export/users.csv", admin.exportUsersCsv);
 
 router.get("/drivers", admin.listDrivers);
 router.patch("/drivers/:userId/status", admin.setDriverStatus);
+router.patch("/drivers/:userId/documents/:doc", admin.reviewDriverDocument);
+router.patch("/drivers/:userId/vehicle-change", admin.reviewDriverVehicleChange);
 router.get("/export/drivers.csv", admin.exportDriversCsv);
 
 router.get("/trips", admin.listTrips);

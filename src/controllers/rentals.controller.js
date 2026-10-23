@@ -10,6 +10,9 @@ import {
   cancelPaidRental,
   confirmRentalPaid,
   dayKey,
+  declineRentalByOwner,
+  ownerDeclineDeadline,
+  ownerPayoutCents,
   expireRentalHold,
   listingsBookedBetween,
   quoteRental,
@@ -144,7 +147,7 @@ export const listingAvailability = asyncHandler(async (req, res) => {
   let to = toUtcDay(req.query.to || new Date(from.getTime() + 90 * 86400000));
   if (!to || !(from < to)) throw httpError(400, "`to` must be after `from`");
   if ((to - from) / 86400000 > 366) to = new Date(from.getTime() + 366 * 86400000);
-  const booked = await bookedDaysForListing(listing._id, from, to);
+  const booked = await bookedDaysForListing(listing._id, from, to, { blockedDays: listing.blockedDays || [] });
   res.json({
     ok: true,
     listingId: listing._id.toString(),
@@ -152,6 +155,7 @@ export const listingAvailability = asyncHandler(async (req, res) => {
     to: dayKey(to),
     availableFrom: listing.availableFrom ? dayKey(toUtcDay(listing.availableFrom)) : null,
     availableTo: listing.availableTo ? dayKey(toUtcDay(listing.availableTo)) : null,
+    /** Unavailable days: booked, held, or blocked by the owner */
     bookedDays: booked.days,
     bookedRanges: booked.ranges,
   });
@@ -179,8 +183,8 @@ export const createListing = asyncHandler(async (req, res) => {
     ownerId: req.user._id,
     source: body.source === "fleet" && req.user.role === "admin" ? "fleet" : "peer",
     title: String(body.title || `${body.year || ""} ${body.make || ""} ${body.model || ""}`).trim(),
-    description: String(body.description || "").trim(),
-    vehicleType: body.vehicleType || "sedan",
+    description: cleanDescription(body.description),
+    vehicleType: VEHICLE_TYPES.includes(body.vehicleType) ? body.vehicleType : "sedan",
     make: String(body.make || "").trim(),
     model: String(body.model || "").trim(),
     year: Number(body.year) || new Date().getFullYear(),
@@ -191,51 +195,210 @@ export const createListing = asyncHandler(async (req, res) => {
     lat: body.lat != null ? Number(body.lat) : null,
     lng: body.lng != null ? Number(body.lng) : null,
     dailyRateCents,
-    photos: Array.isArray(body.photos) ? body.photos.slice(0, 8) : [],
+    photos: cleanPhotos(body.photos),
     status: "pending",
+    reviewReason: "new",
     availableFrom,
     availableTo,
   });
   res.status(201).json({ ok: true, listing: row.toSafeJSON() });
 });
 
-/** PATCH /api/rentals/listings/:id */
+const MAX_PHOTOS = 8;
+const DAY_RX = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Listing photos: http(s) URLs from POST /api/uploads/photos, at most 8. */
+function cleanPhotos(raw) {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) throw httpError(400, "photos must be a list of URLs");
+  const urls = [...new Set(raw.map((u) => String(u || "").trim()).filter(Boolean))];
+  if (urls.some((u) => !/^https?:\/\//i.test(u) || u.length > 2000)) {
+    throw httpError(400, "Each photo must be an uploaded image URL");
+  }
+  if (urls.length > MAX_PHOTOS) throw httpError(400, `Up to ${MAX_PHOTOS} photos per listing`);
+  return urls;
+}
+
+function cleanDescription(raw) {
+  const d = String(raw ?? "").trim();
+  if (d.length > 2000) throw httpError(400, "Description is limited to 2000 characters");
+  return d;
+}
+
+/** Owner calendar blocks: unique YYYY-MM-DD days from today on (past days are dropped). */
+function cleanBlockedDays(raw) {
+  if (!Array.isArray(raw)) throw httpError(400, "blockedDays must be a list of YYYY-MM-DD days");
+  const today = dayKey(toUtcDay(new Date()));
+  const days = [...new Set(raw.map((d) => String(d).trim()))];
+  for (const d of days) {
+    const parsed = DAY_RX.test(d) ? toUtcDay(`${d}T00:00:00Z`) : null;
+    if (!parsed || dayKey(parsed) !== d) throw httpError(400, `Invalid day: ${d}`);
+  }
+  const future = days.filter((d) => d >= today).sort();
+  if (future.length > 366) throw httpError(400, "You can block up to 366 days");
+  return future;
+}
+
+const IDENTITY_FIELDS = ["vehicleType", "make", "model", "year", "plate"];
+const OWNER_FIELDS = ["title", "description", "color", "city", "state", "lat", "lng", "availableFrom", "availableTo"];
+
+/**
+ * PATCH /api/rentals/listings/:id — owner edits (TRD 5.8): title, description, photos, price,
+ * availability window, blocked calendar days, pause / resume.
+ *
+ * Review rule (kept simple on purpose): an approved (active or paused) listing goes back to
+ * admin review ("pending") only when
+ *   - the daily price moves more than RENTAL_PRICE_REVIEW_CHANGE_PERCENT (50%) away from the
+ *     last admin-approved price (reason price_change). Smaller changes apply immediately; since
+ *     they are measured from the approved price, small steps can't add up past the limit;
+ *   - or the vehicle itself changes (type, make, model, year, plate — reason details_changed).
+ * Owners can pause an active listing and resume a paused one, but never self-approve.
+ * Blocked days stay bookable for existing bookings; they only stop new ones.
+ */
 export const updateListing = asyncHandler(async (req, res) => {
   const row = await RentalListing.findById(req.params.id);
   if (!row) throw httpError(404, "Listing not found");
-  if (row.ownerId.toString() !== req.user._id.toString() && req.user.role !== "admin") {
+  const isAdmin = req.user.role === "admin";
+  if (row.ownerId.toString() !== req.user._id.toString() && !isAdmin) {
     throw httpError(403, "Not your listing");
   }
-  const fields = [
-    "title",
-    "description",
-    "vehicleType",
-    "make",
-    "model",
-    "year",
-    "plate",
-    "color",
-    "city",
-    "state",
-    "lat",
-    "lng",
-    "dailyRateCents",
-    "photos",
-    "status",
-    "availableFrom",
-    "availableTo",
-  ];
-  for (const f of fields) {
-    if (req.body?.[f] !== undefined) row[f] = req.body[f];
+  const body = req.body || {};
+  const wasApproved = ["active", "paused"].includes(row.status);
+  let review = null;
+
+  for (const f of OWNER_FIELDS) {
+    if (body[f] === undefined) continue;
+    if (f === "description") row.description = cleanDescription(body.description);
+    else if (f === "availableFrom" || f === "availableTo") row[f] = body[f] ? toUtcDay(body[f]) : null;
+    else row[f] = body[f];
   }
-  if (req.user.role !== "admin" && row.status === "active") {
-    // owner can pause; cannot self-approve
+  if (row.availableFrom && row.availableTo && !(row.availableFrom < row.availableTo)) {
+    throw httpError(400, "availableTo must be after availableFrom");
   }
-  if (req.user.role !== "admin" && ["active", "rejected"].includes(req.body?.status)) {
-    throw httpError(403, "Only admin can set active/rejected");
+  if (body.photos !== undefined) row.photos = cleanPhotos(body.photos);
+  if (body.blockedDays !== undefined) row.blockedDays = cleanBlockedDays(body.blockedDays);
+
+  for (const f of IDENTITY_FIELDS) {
+    if (body[f] === undefined) continue;
+    const next =
+      f === "plate" ? String(body.plate || "").trim().toUpperCase() : f === "year" ? Number(body.year) : body[f];
+    if (f === "vehicleType" && !VEHICLE_TYPES.includes(next)) throw httpError(400, "Invalid vehicle type");
+    if (String(next) !== String(row[f])) {
+      row[f] = next;
+      if (wasApproved && !isAdmin) review = "details_changed";
+    }
   }
+
+  if (body.dailyRateCents !== undefined) {
+    const cents = Math.round(Number(body.dailyRateCents));
+    if (!Number.isFinite(cents) || cents < 1000) throw httpError(400, "dailyRateCents must be at least 1000 ($10)");
+    const baseline = row.approvedDailyRateCents || row.dailyRateCents;
+    const changePct = baseline ? (Math.abs(cents - baseline) / baseline) * 100 : 0;
+    row.dailyRateCents = cents;
+    if (wasApproved && !isAdmin && changePct > env.rentalPriceReviewPercent) review = review || "price_change";
+  }
+
+  if (body.status !== undefined && body.status !== row.status) {
+    if (isAdmin) {
+      row.status = body.status;
+      if (body.status === "active") {
+        row.approvedDailyRateCents = row.dailyRateCents;
+        row.reviewReason = null;
+      }
+    } else if (body.status === "paused" && row.status === "active") {
+      row.status = "paused";
+    } else if (body.status === "active" && row.status === "paused" && !row.reviewReason) {
+      row.status = "active";
+    } else {
+      throw httpError(403, "Only admin can approve or reject listings — you can pause and resume an approved listing");
+    }
+  }
+  if (review) {
+    row.status = "pending";
+    row.reviewReason = review;
+  }
+  // Listings approved before the baseline existed
+  if (row.status === "active" && row.approvedDailyRateCents == null) row.approvedDailyRateCents = row.dailyRateCents;
   await row.save();
-  res.json({ ok: true, listing: row.toSafeJSON() });
+  res.json({
+    ok: true,
+    listing: row.toSafeJSON(),
+    reReview: review,
+    message:
+      review === "price_change"
+        ? `Price changed by more than ${env.rentalPriceReviewPercent}% — the listing is back in review until an admin approves it.`
+        : review === "details_changed"
+          ? "Vehicle details changed — the listing is back in review until an admin approves it."
+          : undefined,
+  });
+});
+
+/**
+ * GET /api/rentals/listings/mine/bookings — the owner's paid bookings across their listings:
+ * renter name (no contact details), dates, payout and status; `canDecline` while inside the
+ * RENTAL_OWNER_DECLINE_HOURS window.
+ */
+export const listOwnerBookings = asyncHandler(async (req, res) => {
+  const rows = await RentalBooking.find({
+    ownerId: req.user._id,
+    source: "peer",
+    $or: [{ paid: true }, { status: { $in: ["confirmed", "active", "completed"] } }],
+  })
+    .sort({ startDate: -1 })
+    .limit(200);
+  const { User } = await import("../models/User.js");
+  const [listings, renters] = await Promise.all([
+    RentalListing.find({ _id: { $in: rows.map((r) => r.listingId) } }).select("title photos").lean(),
+    User.find({ _id: { $in: rows.map((r) => r.renterId) } }).select("fullName").lean(),
+  ]);
+  const listingById = new Map(listings.map((l) => [String(l._id), l]));
+  const renterById = new Map(renters.map((u) => [String(u._id), u]));
+  const now = new Date();
+  res.json({
+    ok: true,
+    declineWindowHours: env.rentalOwnerDeclineHours,
+    bookings: rows.map((b) => {
+      const deadline = ownerDeclineDeadline(b);
+      const canDecline = Boolean(b.paid && b.status === "confirmed" && deadline && now < deadline);
+      const l = listingById.get(String(b.listingId));
+      return {
+        id: b._id.toString(),
+        listingId: b.listingId.toString(),
+        listingTitle: l?.title ?? null,
+        listingPhoto: l?.photos?.[0] ?? null,
+        renterName: renterById.get(String(b.renterId))?.fullName ?? "Renter",
+        startDate: b.startDate,
+        endDate: b.endDate,
+        days: b.days,
+        dailyRateCents: b.dailyRateCents,
+        subtotalCents: b.subtotalCents,
+        commissionCents: b.commissionCents,
+        payoutCents: ownerPayoutCents(b),
+        status: b.status,
+        paymentStatus: b.paymentStatus,
+        paidAt: b.paidAt,
+        cancelledAt: b.cancelledAt,
+        cancelledBy: b.cancelledBy,
+        refundCents: b.refundCents,
+        canDecline,
+        declineDeadline: canDecline ? deadline : null,
+        createdAt: b.createdAt,
+      };
+    }),
+  });
+});
+
+/** POST /api/rentals/bookings/:id/decline — owner declines a paid booking (full refund to the renter) */
+export const declineBooking = asyncHandler(async (req, res) => {
+  const booking = await RentalBooking.findById(req.params.id);
+  if (!booking) throw httpError(404, "Booking not found");
+  if (String(booking.ownerId) !== String(req.user._id)) throw httpError(403, "Not your listing's booking");
+  const done = await declineRentalByOwner(booking, { reason: req.body?.reason });
+  res.json({
+    ok: true,
+    booking: done.toSafeJSON(),
+    message: `Booking declined — the renter is refunded $${(done.refundCents / 100).toFixed(2)} in full.`,
+  });
 });
 
 /** GET /api/rentals/quote?listingId=&startDate=&endDate= — exactly what a booking would charge */

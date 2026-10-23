@@ -1,3 +1,5 @@
+import { expiredDocumentReason, expiredDocuments } from "./driverDocuments.js";
+
 /**
  * Connect account ids given to seeded QA drivers (src/scripts/seed-test-accounts.js).
  * They have no real Stripe account, so never look them up in Stripe.
@@ -36,25 +38,30 @@ export function isStripeConnectReady(profile) {
   );
 }
 
-/** Full gate for accepting / rejecting trips. */
-export function canDriverHandleRides(profile, { subscriptionActive = false } = {}) {
+/** Full gate for going online and accepting / rejecting trips. */
+export function canDriverHandleRides(profile, { subscriptionActive = false, now = new Date() } = {}) {
   return (
     Boolean(profile?.isApproved) &&
     Boolean(subscriptionActive) &&
     isStripeConnectReady(profile) &&
-    isDriverVerificationComplete(profile)
+    isDriverVerificationComplete(profile) &&
+    // An expired license / registration / insurance blocks until a new one is uploaded
+    expiredDocuments(profile, now).length === 0
   );
 }
 
-export function driverReadinessPayload(profile, { subscriptionActive = false } = {}) {
+export function driverReadinessPayload(profile, { subscriptionActive = false, now = new Date() } = {}) {
   const verificationComplete = isDriverVerificationComplete(profile);
   const connectReady = isStripeConnectReady(profile);
-  const canHandleRides = canDriverHandleRides(profile, { subscriptionActive });
+  const canHandleRides = canDriverHandleRides(profile, { subscriptionActive, now });
+  const expired = expiredDocuments(profile, now);
   let blockReason = null;
   if (!profile?.isApproved) {
     blockReason = hasCoreLicenseDocs(profile)
       ? "Driver account pending admin approval"
       : "Upload your license and verification documents before accepting rides";
+  } else if (expired.length) {
+    blockReason = expiredDocumentReason(profile, now);
   } else if (!subscriptionActive) {
     blockReason = "Active driver subscription required ($100/mo or $32/wk) — finish it in Billing";
   } else if (!connectReady) {
@@ -68,5 +75,7 @@ export function driverReadinessPayload(profile, { subscriptionActive = false } =
     subscriptionActive: Boolean(subscriptionActive),
     canHandleRides,
     blockReason,
+    /** Which documents are expired (each blocks going online until replaced) */
+    expiredDocuments: expired,
   };
 }

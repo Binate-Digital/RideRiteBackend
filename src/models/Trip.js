@@ -95,6 +95,8 @@ const tripSchema = new mongoose.Schema(
     refundCents: { type: Number, default: 0 },
     cancelledAt: { type: Date, default: null },
     cancelReason: { type: String, default: null },
+    /** Who cancelled: the rider (today's only cancel flow), the driver, or the system */
+    cancelledBy: { type: String, enum: ["rider", "driver", "system", null], default: null },
     // Dispatch: the trip is offered to one driver at a time, nearest first
     offeredDriverId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -115,6 +117,8 @@ const tripSchema = new mongoose.Schema(
     // Lifecycle timestamps
     requestedAt: { type: Date, default: Date.now },
     acceptedAt: { type: Date, default: null },
+    /** Pickup ETA (minutes) quoted when the driver accepted — the on-time yardstick (TRD 5.5) */
+    quotedPickupEtaMinutes: { type: Number, default: null },
     enRouteAt: { type: Date, default: null },
     arrivedAt: { type: Date, default: null },
     startedAt: { type: Date, default: null },
@@ -129,6 +133,8 @@ const tripSchema = new mongoose.Schema(
 tripSchema.index({ status: 1, vehicleType: 1, createdAt: -1 });
 // Sweeper: find offers whose window has passed
 tripSchema.index({ status: 1, offerExpiresAt: 1 });
+// Monthly bonus metrics: a driver's trips completed / cancelled in a month
+tripSchema.index({ driverId: 1, completedAt: 1 });
 // Driver cards: rating average over completed trips
 tripSchema.index({ driverId: 1, status: 1, riderRating: 1 });
 
@@ -168,12 +174,14 @@ tripSchema.methods.toSafeJSON = function toSafeJSON() {
     refundCents: this.refundCents,
     cancelledAt: this.cancelledAt,
     cancelReason: this.cancelReason,
+    cancelledBy: this.cancelledBy,
     offerExpiresAt: this.offerExpiresAt,
     dispatchAttempts: this.dispatchAttempts,
     dispatchStartedAt: this.dispatchStartedAt,
     noDriversAt: this.noDriversAt,
     requestedAt: this.requestedAt,
     acceptedAt: this.acceptedAt,
+    quotedPickupEtaMinutes: this.quotedPickupEtaMinutes,
     enRouteAt: this.enRouteAt,
     arrivedAt: this.arrivedAt,
     startedAt: this.startedAt,

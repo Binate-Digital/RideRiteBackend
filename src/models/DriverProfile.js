@@ -1,4 +1,20 @@
 import mongoose from "mongoose";
+import { documentsPayload, legacyDayString } from "../utils/driverDocuments.js";
+
+/** Review state of one uploaded document (TRD 5.1 / 5.2). */
+const documentReviewSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ["missing", "pending", "approved", "rejected"],
+      default: "missing",
+    },
+    submittedAt: { type: Date, default: null },
+    reviewedAt: { type: Date, default: null },
+    note: { type: String, default: "" },
+  },
+  { _id: false },
+);
 
 const driverProfileSchema = new mongoose.Schema(
   {
@@ -30,14 +46,60 @@ const driverProfileSchema = new mongoose.Schema(
     zip: { type: String, trim: true, default: "" },
     dlNumber: { type: String, trim: true, default: "" },
     dlState: { type: String, trim: true, uppercase: true, default: "FL" },
+    /** Legacy free-text expiry (pre Phase 4). Read as a fallback when dlExpiresAt is unset. */
     dlExpiresOn: { type: String, default: null },
+    dlExpiresAt: { type: Date, default: null },
     licenseFrontUrl: { type: String, default: null },
     licenseBackUrl: { type: String, default: null },
 
     // Insurance
     insuranceCarrier: { type: String, trim: true, default: "" },
     insurancePolicyNumber: { type: String, trim: true, default: "" },
+    /** Legacy free-text expiry — fallback for insuranceExpiresAt */
     insuranceExpiresOn: { type: String, default: null },
+    insuranceExpiresAt: { type: Date, default: null },
+    insuranceDocUrl: { type: String, default: null },
+
+    // Vehicle registration
+    registrationDocUrl: { type: String, default: null },
+    registrationExpiresAt: { type: Date, default: null },
+
+    /** Per-document review; re-uploading after approval puts just that document back to pending. */
+    documentReview: {
+      license: { type: documentReviewSchema, default: () => ({}) },
+      registration: { type: documentReviewSchema, default: () => ({}) },
+      insurance: { type: documentReviewSchema, default: () => ({}) },
+    },
+    /**
+     * Expiry notices already sent, per document: { license: { for: "2026-11-30", sent: { "30": Date } } }.
+     * `for` is the expiry day they were sent about — a new expiry date starts a fresh set.
+     */
+    documentNotices: { type: Object, default: {} },
+    /** Maintenance due / overdue notices sent, per service type and due date (utils/maintenance.js) */
+    maintenanceNotices: { type: Object, default: {} },
+
+    /**
+     * Vehicle type / plate change requested after approval (TRD 5.2). The driver keeps driving
+     * the approved vehicle above until an admin approves this (Phase 5 admin).
+     */
+    pendingVehicleChange: {
+      type: new mongoose.Schema(
+        {
+          vehicleType: { type: String, enum: ["sedan", "suv", "truck"] },
+          vehicleMake: String,
+          vehicleModel: String,
+          vehicleColor: String,
+          vehiclePlate: String,
+          vehicleYear: Number,
+          vehicleVin: String,
+          requestedAt: { type: Date, default: Date.now },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+    /** Last admin decision on a vehicle change: { status: approved|rejected, at, note, change } */
+    lastVehicleChangeReview: { type: Object, default: null },
 
     verificationStatus: {
       type: String,
@@ -66,7 +128,7 @@ const driverProfileSchema = new mongoose.Schema(
       updatedAt: { type: Date, default: null },
     },
   },
-  { timestamps: true },
+  { timestamps: true, minimize: false },
 );
 
 driverProfileSchema.methods.toSafeJSON = function toSafeJSON() {
@@ -88,12 +150,22 @@ driverProfileSchema.methods.toSafeJSON = function toSafeJSON() {
     zip: this.zip,
     dlNumber: this.dlNumber,
     dlState: this.dlState,
-    dlExpiresOn: this.dlExpiresOn,
+    // YYYY-MM-DD (from the Date, or the legacy string) — what the web forms show
+    dlExpiresOn: legacyDayString(this.dlExpiresAt, this.dlExpiresOn),
     licenseFrontUrl: this.licenseFrontUrl,
     licenseBackUrl: this.licenseBackUrl,
     insuranceCarrier: this.insuranceCarrier,
     insurancePolicyNumber: this.insurancePolicyNumber,
-    insuranceExpiresOn: this.insuranceExpiresOn,
+    insuranceExpiresOn: legacyDayString(this.insuranceExpiresAt, this.insuranceExpiresOn),
+    insuranceDocUrl: this.insuranceDocUrl,
+    registrationDocUrl: this.registrationDocUrl,
+    registrationExpiresOn: legacyDayString(this.registrationExpiresAt, null),
+    /** License / registration / insurance: files, expiry, review status, days left */
+    documents: documentsPayload(this),
+    pendingVehicleChange: this.pendingVehicleChange
+      ? { ...(this.pendingVehicleChange.toObject?.() ?? this.pendingVehicleChange) }
+      : null,
+    lastVehicleChangeReview: this.lastVehicleChangeReview,
     verificationStatus: this.verificationStatus,
     verificationSubmittedAt: this.verificationSubmittedAt,
     verificationSkippedAt: this.verificationSkippedAt,

@@ -33,6 +33,7 @@ import { settleTripRefund } from "../utils/refunds.js";
 import { recordCancellationFeeEarning, recordTripEarning } from "../utils/earnings.js";
 import { rideReceiptEmail } from "../utils/mailer.js";
 import { User } from "../models/User.js";
+import { etaMinutesForMiles, haversineMiles } from "../utils/nearbyDrivers.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
 /** Rider has a ride in flight — can't book another until it ends. */
@@ -257,6 +258,7 @@ export const cancel = asyncHandler(async (req, res) => {
         status: "cancelled",
         cancelledAt: new Date(),
         cancelReason: reason || null,
+        cancelledBy: "rider",
         cancelFeeCents: feeCents,
         refundCents,
         offeredDriverId: null,
@@ -420,6 +422,13 @@ export const accept = asyncHandler(async (req, res) => {
   });
   if (busy) throw httpError(409, "You already have an active trip");
 
+  // The pickup ETA quoted to the rider at accept — bonus on-time rate measures against it
+  const offered = await Trip.findById(req.params.id).select("pickupCoords").lean();
+  const quotedPickupEtaMinutes =
+    offered?.pickupCoords && profile.lastLocation?.lat != null && profile.lastLocation?.lng != null
+      ? etaMinutesForMiles(haversineMiles(profile.lastLocation, offered.pickupCoords))
+      : null;
+
   // Only the driver holding the offer, and only inside the offer window
   const trip = await Trip.findOneAndUpdate(
     {
@@ -435,6 +444,7 @@ export const accept = asyncHandler(async (req, res) => {
         driverId: req.user._id,
         status: "accepted",
         acceptedAt: new Date(),
+        quotedPickupEtaMinutes,
         offeredDriverId: null,
         offerExpiresAt: null,
       },

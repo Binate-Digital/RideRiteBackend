@@ -6,6 +6,7 @@ import { initRealtime } from "./realtime/index.js";
 import { startDispatchSweeper } from "./utils/dispatch.js";
 import { startPaymentSweeper } from "./utils/paymentSweeper.js";
 import { startReminderSweeper } from "./utils/reminders.js";
+import { startDriverSweeper } from "./utils/driverSweeper.js";
 
 async function main() {
   await connectDb();
@@ -19,6 +20,8 @@ async function main() {
   startPaymentSweeper();
   // Rental / chauffeur reminders (24h, 1h) and unassigned chauffeur bookings at start time
   startReminderSweeper();
+  // Daily: document expiry, monthly bonus freeze, maintenance and membership notices
+  startDriverSweeper();
   server.listen(env.port, () => {
     console.log(`[server] ${env.appName} API listening on http://localhost:${env.port}`);
     console.log(`[server] health → http://localhost:${env.port}/health`);

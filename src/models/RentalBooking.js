@@ -33,6 +33,9 @@ const rentalBookingSchema = new mongoose.Schema(
     stripePaymentIntentId: { type: String, default: null, index: true },
     /** Renter cancelled a paid booking: refund owed per the cancellation policy */
     cancelledAt: { type: Date, default: null },
+    /** renter (cancel per policy) or owner (declined within RENTAL_OWNER_DECLINE_HOURS, full refund) */
+    cancelledBy: { type: String, enum: ["renter", "owner", "system", null], default: null },
+    declineReason: { type: String, default: "" },
     refundCents: { type: Number, default: 0 },
     refundPercent: { type: Number, default: null },
     /** Reminder keys already sent, e.g. { renter_1440: Date } (see utils/reminders.js) */
@@ -61,6 +64,8 @@ rentalBookingSchema.methods.toSafeJSON = function toSafeJSON() {
     holdExpiresAt: this.holdExpiresAt,
     paidAt: this.paidAt,
     cancelledAt: this.cancelledAt,
+    cancelledBy: this.cancelledBy,
+    declineReason: this.declineReason,
     refundCents: this.refundCents,
     refundPercent: this.refundPercent,
     createdAt: this.createdAt,

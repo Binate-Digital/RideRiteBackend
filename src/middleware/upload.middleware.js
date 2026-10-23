@@ -7,6 +7,7 @@ import {
   ALLOWED_IMAGE_MIME,
   localAvatarsPath,
   localDocumentsPath,
+  localPhotosPath,
   uploadConfig,
 } from "../config/upload.config.js";
 
@@ -79,7 +80,7 @@ function documentFilter(_req, file, cb) {
   else cb(new Error("Only image or PDF files are allowed"), false);
 }
 
-function buildUploader({ imagesOnly = true, maxBytes } = {}) {
+function buildUploader({ imagesOnly = true, maxBytes, localDir = null, localPrefix = null } = {}) {
   const limits = { fileSize: maxBytes };
   const fileFilter = imagesOnly ? imageFilter : documentFilter;
 
@@ -92,8 +93,8 @@ function buildUploader({ imagesOnly = true, maxBytes } = {}) {
   }
 
   // Dev fallback — write to ./uploads and serve via /uploads/*
-  const dest = imagesOnly ? localAvatarsPath : localDocumentsPath;
-  const prefix = imagesOnly ? "avatar" : "doc";
+  const dest = localDir || (imagesOnly ? localAvatarsPath : localDocumentsPath);
+  const prefix = localPrefix || (imagesOnly ? "avatar" : "doc");
   return multer({
     storage: createLocalDiskStorage(dest, prefix),
     limits,
@@ -109,6 +110,13 @@ const imageUpload = buildUploader({
 const documentUpload = buildUploader({
   imagesOnly: false,
   maxBytes: uploadConfig.maxDocumentBytes,
+});
+
+const photoUpload = buildUploader({
+  imagesOnly: true,
+  maxBytes: uploadConfig.maxPhotoBytes,
+  localDir: localPhotosPath,
+  localPrefix: "photo",
 });
 
 /** Normalize multer file → public URL + optional S3 key */
@@ -128,7 +136,11 @@ export function fileToUploadResult(file, req) {
   }
 
   // Local disk
-  const folder = file.destination?.includes("documents") ? "documents" : "avatars";
+  const folder = file.destination?.includes("documents")
+    ? "documents"
+    : file.destination?.includes("photos")
+      ? "photos"
+      : "avatars";
   const base = `${req.protocol}://${req.get("host")}`;
   return {
     url: `${base}/uploads/${folder}/${file.filename}`,
@@ -152,3 +164,6 @@ export const uploadSingle = (field = "file") => documentUpload.single(field);
 export const uploadMultiple = (field = "files", max = 10) =>
   documentUpload.array(field, max);
 export const uploadFields = (fields) => documentUpload.fields(fields);
+
+/** Rental listing photos (JPG / PNG / WEBP, 10MB each) */
+export const uploadPhotos = (field = "photos", max = 8) => photoUpload.array(field, max);

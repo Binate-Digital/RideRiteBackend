@@ -17,6 +17,13 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { findTripPayment, refundPayment } from "../utils/refunds.js";
 import { runPayouts } from "../utils/payouts.js";
+import {
+  markUploadedDocumentsApproved,
+  reviewDocument,
+  reviewVehicleChange,
+} from "../utils/driverCompliance.js";
+import { documentsPayload } from "../utils/driverDocuments.js";
+import { reviewBonus } from "../utils/bonus.js";
 
 async function audit(actorId, action, targetType, targetId, meta = {}) {
   try {
@@ -229,9 +236,38 @@ export const listDrivers = asyncHandler(async (req, res) => {
         status,
         createdAt: p.createdAt,
         verificationSubmittedAt: p.verificationSubmittedAt,
+        /** License / registration / insurance: files, expiry, per-document review */
+        documents: documentsPayload(p),
+        /** Vehicle type / plate change awaiting review (driver keeps the approved vehicle) */
+        pendingVehicleChange: p.pendingVehicleChange || null,
       };
     }),
   });
+});
+
+/** PATCH /api/admin/drivers/:userId/documents/:doc — body: { status: approved|rejected, note? } */
+export const reviewDriverDocument = asyncHandler(async (req, res) => {
+  const profile = await reviewDocument(req.params.userId, req.params.doc, {
+    status: String(req.body?.status || ""),
+    note: String(req.body?.note || "").trim(),
+  });
+  await audit(req.user._id, "driver.document.review", "DriverProfile", profile._id.toString(), {
+    doc: req.params.doc,
+    status: req.body?.status,
+  });
+  res.json({ ok: true, documents: documentsPayload(profile) });
+});
+
+/** PATCH /api/admin/drivers/:userId/vehicle-change — body: { action: approve|reject, note? } */
+export const reviewDriverVehicleChange = asyncHandler(async (req, res) => {
+  const action = String(req.body?.action || "");
+  if (!["approve", "reject"].includes(action)) throw httpError(400, "action must be approve or reject");
+  const profile = await reviewVehicleChange(req.params.userId, {
+    approve: action === "approve",
+    note: String(req.body?.note || "").trim(),
+  });
+  await audit(req.user._id, `driver.vehicle_change.${action}`, "DriverProfile", profile._id.toString());
+  res.json({ ok: true, driver: profile.toSafeJSON() });
 });
 
 /** PATCH /api/admin/users/:id/role — body: { role } */
@@ -273,6 +309,7 @@ export const setDriverStatus = asyncHandler(async (req, res) => {
     profile.verificationStatus = "approved";
     profile.isApproved = true;
     profile.isOnline = false;
+    markUploadedDocumentsApproved(profile);
   } else if (status === "rejected" || status === "suspended") {
     profile.verificationStatus = "rejected";
     profile.isApproved = false;
@@ -381,6 +418,11 @@ export const updateRentalListing = asyncHandler(async (req, res) => {
   if (!row) throw httpError(404, "Listing not found");
   if (req.body?.status) row.status = req.body.status;
   if (req.body?.dailyRateCents != null) row.dailyRateCents = Number(req.body.dailyRateCents);
+  if (row.status === "active") {
+    // Approved: this price is the new baseline for the owner's >50% re-review rule
+    row.approvedDailyRateCents = row.dailyRateCents;
+    row.reviewReason = null;
+  }
   await row.save();
   await audit(req.user._id, "rental.listing.update", "RentalListing", row._id.toString(), {
     status: row.status,
@@ -420,17 +462,18 @@ export const listBonuses = asyncHandler(async (req, res) => {
   });
 });
 
-/** PATCH /api/admin/bonuses/:id */
+/**
+ * PATCH /api/admin/bonuses/:id — body: { status: approved|rejected|disbursed, adminNotes?, giftCardCode? }
+ * Approving a pending bonus credits it to the driver's earnings ledger (paid with the next
+ * payout); giftCardCode is optional, for when a gift card is sent manually.
+ */
 export const updateBonus = asyncHandler(async (req, res) => {
-  const row = await DriverBonus.findById(req.params.id);
-  if (!row) throw httpError(404, "Bonus not found");
-  if (["approved", "rejected", "disbursed"].includes(req.body?.status)) {
-    row.status = req.body.status;
-    row.reviewedAt = new Date();
-    if (req.body.status === "disbursed") row.disbursedAt = new Date();
-  }
-  if (req.body?.adminNotes != null) row.adminNotes = String(req.body.adminNotes);
-  await row.save();
+  const row = await reviewBonus(req.params.id, {
+    status: req.body?.status,
+    adminNotes: req.body?.adminNotes,
+    giftCardCode: req.body?.giftCardCode,
+    reviewerId: req.user._id,
+  });
   await audit(req.user._id, "bonus.update", "DriverBonus", row._id.toString(), {
     status: row.status,
   });
@@ -454,20 +497,56 @@ export const listMaintenance = asyncHandler(async (_req, res) => {
       title: r.title,
       status: r.status,
       coveredByPlatform: r.coveredByPlatform,
+      costCents: r.costCents,
       dueAt: r.dueAt,
+      scheduledFor: r.scheduledFor ?? null,
       completedAt: r.completedAt,
     })),
   });
 });
 
-/** PATCH /api/admin/maintenance/:id */
+/**
+ * PATCH /api/admin/maintenance/:id — body: { status?, notes?, costCents?, scheduledFor?, completedAt? }
+ * Completing a service restarts that service's schedule from its completion date.
+ */
 export const updateMaintenance = asyncHandler(async (req, res) => {
   const row = await MaintenanceRecord.findById(req.params.id);
   if (!row) throw httpError(404, "Record not found");
-  if (req.body?.status) row.status = req.body.status;
-  if (req.body?.status === "completed") row.completedAt = new Date();
+  const status = req.body?.status;
+  if (status) {
+    if (!["requested", "scheduled", "completed", "cancelled"].includes(status)) {
+      throw httpError(400, "Invalid maintenance status");
+    }
+    row.status = status;
+    if (status === "completed") {
+      const at = req.body?.completedAt ? new Date(req.body.completedAt) : new Date();
+      row.completedAt = Number.isNaN(at.getTime()) ? new Date() : at;
+    }
+  }
   if (req.body?.notes != null) row.notes = String(req.body.notes);
+  if (req.body?.costCents != null) {
+    const cost = Math.round(Number(req.body.costCents));
+    if (!Number.isFinite(cost) || cost < 0) throw httpError(400, "costCents must be ≥ 0");
+    row.costCents = cost;
+  }
+  if (req.body?.scheduledFor) {
+    const at = new Date(req.body.scheduledFor);
+    if (!Number.isNaN(at.getTime())) row.scheduledFor = at;
+  }
   await row.save();
+  await audit(req.user._id, "maintenance.update", "MaintenanceRecord", row._id.toString(), { status: row.status });
+  if (status === "scheduled" || status === "completed") {
+    const { notifyUser } = await import("./notifications.controller.js");
+    await notifyUser(row.userId, {
+      category: "maintenance",
+      title: status === "completed" ? `${row.title} — done` : `${row.title} — booked`,
+      body:
+        status === "completed"
+          ? "Thanks — the service is recorded and your next one is now scheduled."
+          : `Your covered service is booked${row.scheduledFor ? ` for ${row.scheduledFor.toLocaleDateString("en-US")}` : ""}.`,
+      data: { href: "/driver", maintenanceId: row._id.toString() },
+    });
+  }
   res.json({ ok: true, record: row.toSafeJSON() });
 });
 

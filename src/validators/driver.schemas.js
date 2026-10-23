@@ -25,5 +25,9 @@ export const driverVerificationSchema = z.object({
   insuranceCarrier: z.string().trim().min(2).max(80).optional(),
   insurancePolicyNumber: z.string().trim().min(2).max(60).optional(),
   insuranceExpiresOn: z.string().trim().min(4).max(32).optional(),
+  /** Uploaded via POST /api/uploads/driver-docs (fields registrationDoc / insuranceDoc) */
+  insuranceDocUrl: optionalDataUrl.optional(),
+  registrationDocUrl: optionalDataUrl.optional(),
+  registrationExpiresOn: z.string().trim().min(4).max(32).optional(),
   skipForLater: z.boolean().optional(),
 });

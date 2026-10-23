@@ -52,6 +52,10 @@ export function quoteRental(listing, startRaw, endRaw) {
   }
   const days = Math.round((endDate - startDate) / DAY_MS);
   if (days > 60) throw httpError(400, "Rentals are limited to 60 days");
+  const blocked = new Set(listing.blockedDays || []);
+  if (blocked.size && rentalDays(startDate, endDate).some((d) => blocked.has(d))) {
+    throw httpError(409, "Dates not available", { code: "DATES_TAKEN" });
+  }
   const subtotalCents = days * listing.dailyRateCents;
   const commissionCents =
     listing.source === "peer" ? Math.round(subtotalCents * env.rentalCommissionRate) : 0;
@@ -181,9 +185,10 @@ export async function confirmRentalPaid(bookingId, { paymentIntentId, provider }
     if (String(booking.ownerId) !== String(booking.renterId) && booking.source === "peer") {
       await notifyUser(booking.ownerId, {
         category: "rental",
-        title: "Your vehicle was booked",
-        body: `${listing?.title || "Listing"} · ${dayKey(booking.startDate)} → ${dayKey(booking.endDate)}`,
+        title: "New rental booking",
+        body: `${renter?.fullName || "A renter"} booked ${listing?.title || "your vehicle"} · ${dayKey(booking.startDate)} → ${dayKey(booking.endDate)} · you earn ${money(ownerPayoutCents(booking))}. You can decline within ${env.rentalOwnerDeclineHours}h.`,
         data: { rentalBookingId: booking._id.toString(), href: "/driver" },
+        email: true,
       });
     }
   } catch {
@@ -241,6 +246,7 @@ export async function cancelPaidRental(booking, now = new Date()) {
       $set: {
         status: "cancelled",
         cancelledAt: now,
+        cancelledBy: "renter",
         refundCents: policy.refundCents,
         refundPercent: policy.percent,
       },
@@ -285,7 +291,7 @@ export async function cancelPaidRental(booking, now = new Date()) {
  * (paid bookings and live unpaid holds) and bookings that predate slots. Returns sorted
  * day keys and merged [start, end) ranges.
  */
-export async function bookedDaysForListing(listingId, from, to) {
+export async function bookedDaysForListing(listingId, from, to, { blockedDays = [] } = {}) {
   const keys = new Set(
     (
       await RentalDaySlot.find({ listingId, day: { $gte: dayKey(from), $lt: dayKey(to) } })
@@ -304,6 +310,10 @@ export async function bookedDaysForListing(listingId, from, to) {
   for (const b of legacy) {
     for (const k of rentalDays(new Date(Math.max(b.startDate, from)), new Date(Math.min(b.endDate, to)))) keys.add(k);
   }
+  // Owner-blocked days are unavailable to renters exactly like booked ones
+  const fromKey = dayKey(from);
+  const toKey = dayKey(to);
+  for (const d of blockedDays) if (d >= fromKey && d < toKey) keys.add(d);
   const days = [...keys].sort();
   const ranges = [];
   for (const d of days) {
@@ -318,15 +328,16 @@ export async function bookedDaysForListing(listingId, from, to) {
 /** Listing ids with any booked day in [start, end) — used by the availability filter. */
 export async function listingsBookedBetween(startDate, endDate) {
   const days = rentalDays(startDate, endDate);
-  const [slotted, legacy] = await Promise.all([
+  const [slotted, legacy, blocked] = await Promise.all([
     RentalDaySlot.distinct("listingId", { day: { $in: days } }),
     RentalBooking.distinct("listingId", {
       status: { $in: ["confirmed", "active"] },
       startDate: { $lt: endDate },
       endDate: { $gt: startDate },
     }),
+    RentalListing.distinct("_id", { blockedDays: { $in: days } }),
   ]);
-  return [...slotted, ...legacy];
+  return [...slotted, ...legacy, ...blocked];
 }
 
 export async function sweepExpiredRentalHolds(now = new Date()) {
@@ -336,4 +347,74 @@ export async function sweepExpiredRentalHolds(now = new Date()) {
     .lean();
   for (const b of stale) await expireRentalHold(b._id);
   return stale.length;
+}
+
+/** Payout the owner earns on a P2P booking (subtotal − platform commission). */
+export const ownerPayoutCents = (booking) => (booking.subtotalCents || 0) - (booking.commissionCents || 0);
+
+/** When the owner's right to decline a paid booking ends (RENTAL_OWNER_DECLINE_HOURS after payment). */
+export function ownerDeclineDeadline(booking) {
+  const madeAt = booking.paidAt || booking.createdAt;
+  if (!madeAt) return null;
+  const byWindow = new Date(new Date(madeAt).getTime() + env.rentalOwnerDeclineHours * 3600000);
+  // Never after pickup
+  return new Date(Math.min(byWindow.getTime(), new Date(booking.startDate).getTime()));
+}
+
+/**
+ * P2P owner declines a paid booking within RENTAL_OWNER_DECLINE_HOURS of it being made:
+ * the renter gets a full refund, the dates open again and the owner's earning is voided.
+ */
+export async function declineRentalByOwner(booking, { reason = "", now = new Date() } = {}) {
+  if (booking.source !== "peer") throw httpError(400, "Only peer-to-peer bookings can be declined by the owner");
+  if (!booking.paid || booking.status !== "confirmed") {
+    throw httpError(400, "Only a confirmed, paid booking can be declined", { code: "NOT_DECLINABLE" });
+  }
+  const deadline = ownerDeclineDeadline(booking);
+  if (!deadline || now >= deadline) {
+    throw httpError(
+      409,
+      `Bookings can only be declined within ${env.rentalOwnerDeclineHours} hours of being made (and before pickup)`,
+      { code: "DECLINE_WINDOW_PASSED" },
+    );
+  }
+  const cancelled = await RentalBooking.findOneAndUpdate(
+    { _id: booking._id, status: "confirmed", paid: true },
+    {
+      $set: {
+        status: "cancelled",
+        cancelledAt: now,
+        cancelledBy: "owner",
+        declineReason: String(reason || "").slice(0, 300),
+        refundCents: booking.totalCents,
+        refundPercent: 100,
+      },
+    },
+    { new: true },
+  );
+  if (!cancelled) throw httpError(409, "The booking just changed — refresh and try again");
+  await releaseRentalDays(cancelled._id);
+  await adjustRentalOwnerEarning(cancelled, 0).catch((err) =>
+    console.error(`[earnings] rental ${cancelled._id} owner decline adjustment failed:`, err.message),
+  );
+  const settled = cancelled.refundCents > 0 ? await settleBookingRefund(RentalBooking, "rental", cancelled._id) : null;
+  const finalBooking = settled?.booking || (await RentalBooking.findById(cancelled._id));
+
+  const listing = await RentalListing.findById(cancelled.listingId).select("title");
+  const { notifyUser } = await import("../controllers/notifications.controller.js");
+  const when = `${dayKey(cancelled.startDate)} → ${dayKey(cancelled.endDate)}`;
+  await notifyUser(cancelled.renterId, {
+    category: "rental",
+    title: "Your rental was declined by the owner",
+    body: `${listing?.title || "Your rental"} · ${when}. ${money(cancelled.totalCents)} is being refunded to your card in full.`,
+    data: { rentalBookingId: cancelled._id.toString(), href: "/rentals", refundCents: cancelled.totalCents },
+    email: true,
+  });
+  await notifyUser(cancelled.ownerId, {
+    category: "rental",
+    title: "Booking declined",
+    body: `${listing?.title || "Listing"} · ${when} — the renter was refunded and the dates are open again.`,
+    data: { rentalBookingId: cancelled._id.toString(), href: "/driver" },
+  });
+  return finalBooking;
 }

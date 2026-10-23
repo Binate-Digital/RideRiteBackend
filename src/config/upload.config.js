@@ -6,9 +6,10 @@ import { env } from "./env.js";
 export const localUploadRoot = path.join(process.cwd(), "uploads");
 export const localAvatarsPath = path.join(localUploadRoot, "avatars");
 export const localDocumentsPath = path.join(localUploadRoot, "documents");
+export const localPhotosPath = path.join(localUploadRoot, "photos");
 
 export function ensureLocalUploadDirs() {
-  for (const dir of [localAvatarsPath, localDocumentsPath]) {
+  for (const dir of [localAvatarsPath, localDocumentsPath, localPhotosPath]) {
     try {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     } catch (err) {
@@ -39,4 +40,6 @@ export const uploadConfig = {
   useRemote: Boolean(env.uploadApiToken),
   maxImageBytes: 2 * 1024 * 1024,
   maxDocumentBytes: 50 * 1024 * 1024,
+  /** Rental listing photos (images only; phone photos are often over the 2MB avatar cap) */
+  maxPhotoBytes: 10 * 1024 * 1024,
 };

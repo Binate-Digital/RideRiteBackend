@@ -161,6 +161,7 @@ export async function handleInvoicePaid(invoice) {
   }
   if (!sub) return null;
   sub.lastPaymentAt = new Date((invoice.status_transitions?.paid_at || Date.now() / 1000) * 1000);
+  if (!sub.firstActiveAt) sub.firstActiveAt = sub.currentPeriodStart || sub.lastPaymentAt;
   await sub.save();
 
   // A renewal charge (not the first invoice) → tell the driver once per invoice

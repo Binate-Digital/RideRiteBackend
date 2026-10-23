@@ -1,46 +1,21 @@
 import { DriverBonus } from "../models/DriverBonus.js";
-import { Trip } from "../models/Trip.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { SAFE_SCORE_RULES, bonusThresholds, monthKeyOf, refreshMonth } from "../utils/bonus.js";
 
-function monthKey(d = new Date()) {
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
-/** GET /api/driver/bonus/me — current month eligibility */
+/**
+ * GET /api/driver/bonus/me — this month's live metrics (recomputed from trips on every view),
+ * the thresholds they are judged against, and the driver's past months.
+ */
 export const getMine = asyncHandler(async (req, res) => {
-  const key = monthKey();
-  let bonus = await DriverBonus.findOne({ userId: req.user._id, monthKey: key });
-  if (!bonus) {
-    const start = new Date(`${key}-01T00:00:00.000Z`);
-    const end = new Date(start);
-    end.setUTCMonth(end.getUTCMonth() + 1);
-    const trips = await Trip.find({
-      driverId: req.user._id,
-      status: "completed",
-      completedAt: { $gte: start, $lt: end },
-    });
-    const tripsCompleted = trips.length;
-    // Proxy on-time: trips where arrivedAt exists before startedAt or completed
-    let onTime = 0;
-    for (const t of trips) {
-      if (t.arrivedAt && t.acceptedAt) {
-        const mins = (new Date(t.arrivedAt) - new Date(t.acceptedAt)) / 60000;
-        if (mins <= 20) onTime += 1;
-      } else onTime += 1;
-    }
-    const onTimeRate = tripsCompleted ? onTime / tripsCompleted : 0;
-    const eligible = tripsCompleted >= 20 && onTimeRate >= 0.9;
-    bonus = await DriverBonus.create({
-      userId: req.user._id,
-      monthKey: key,
-      onTimeRate,
-      tripsCompleted,
-      safeDrivingScore: 100,
-      eligible,
-      giftCardCents: 10000,
-      status: eligible ? "pending_review" : "rejected",
-      adminNotes: eligible ? "" : "Not enough trips / on-time rate",
-    });
-  }
-  res.json({ ok: true, bonus: bonus.toSafeJSON() });
+  const bonus = await refreshMonth(req.user._id, monthKeyOf());
+  const history = await DriverBonus.find({ userId: req.user._id, monthKey: { $ne: bonus.monthKey } })
+    .sort({ monthKey: -1 })
+    .limit(12);
+  res.json({
+    ok: true,
+    bonus: bonus.toSafeJSON(),
+    thresholds: bonusThresholds(),
+    safeScoreRules: SAFE_SCORE_RULES,
+    history: history.map((b) => b.toSafeJSON()),
+  });
 });

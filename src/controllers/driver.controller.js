@@ -20,8 +20,10 @@ import { Trip } from "../models/Trip.js";
 import { declineOffer } from "../utils/dispatch.js";
 import { driverEarningsSummary } from "../utils/earnings.js";
 import { DriverPayout } from "../models/DriverPayout.js";
+import { DriverEarning } from "../models/DriverEarning.js";
 import { env as appEnv } from "../config/env.js";
 import { driverCardsFor } from "../utils/tripDrivers.js";
+import { applyDocumentUpdates, applyVehicleUpdate } from "../utils/driverCompliance.js";
 
 /** Seeded QA accounts (scripts/seed-test-accounts*) use this email domain. */
 const TEST_ACCOUNT_DOMAIN = "@riderite.test";
@@ -62,28 +64,59 @@ export const getProfile = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * PATCH /api/driver/vehicle — after approval, a new vehicle type or plate is staged as
+ * `pendingVehicleChange` for admin re-review; the approved vehicle stays live meanwhile.
+ */
 export const updateVehicle = asyncHandler(async (req, res) => {
   const data = driverVehicleSchema.parse(req.body);
   const profile = await getOrCreateProfile(req.user);
-  Object.assign(profile, data);
+  const { pending } = applyVehicleUpdate(profile, data);
   await profile.save();
   const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   res.json({
     ok: true,
     driver: profile.toSafeJSON(),
+    vehicleChangePending: pending,
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
     testTools: testToolsEnabled(req.user),
   });
 });
 
+/** DELETE /api/driver/vehicle/pending-change — withdraw a vehicle change awaiting review */
+export const cancelVehicleChange = asyncHandler(async (req, res) => {
+  const profile = await getOrCreateProfile(req.user);
+  profile.pendingVehicleChange = null;
+  await profile.save();
+  res.json({ ok: true, driver: profile.toSafeJSON() });
+});
+
+const VEHICLE_KEYS = ["vehicleType", "vehicleMake", "vehicleModel", "vehicleColor", "vehiclePlate", "vehicleYear", "vehicleVin"];
+/** Handled by applyDocumentUpdates (files + expiry dates), never assigned directly. */
+const DOCUMENT_KEYS = [
+  "licenseFrontUrl",
+  "licenseBackUrl",
+  "dlExpiresOn",
+  "insuranceDocUrl",
+  "insuranceExpiresOn",
+  "registrationDocUrl",
+  "registrationExpiresOn",
+];
+
 export const updateVerification = asyncHandler(async (req, res) => {
   const data = driverVerificationSchema.parse(req.body);
   const profile = await getOrCreateProfile(req.user);
+  const wasApproved = Boolean(profile.isApproved);
 
   const { skipForLater, addressLat, addressLng, ...fields } = data;
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined) profile[key] = value;
+    if (value === undefined || VEHICLE_KEYS.includes(key) || DOCUMENT_KEYS.includes(key)) continue;
+    profile[key] = value;
   }
+  // Documents: new file / expiry → that document goes to pending review
+  const changedDocuments = applyDocumentUpdates(profile, fields);
+  // Vehicle: a new type or plate after approval waits for admin re-review
+  const { pending: vehicleChangePending } = applyVehicleUpdate(profile, fields);
 
   // Persist map pin from address picker → homeLocation + lastLocation (so nearby search works)
   if (Number.isFinite(addressLat) && Number.isFinite(addressLng)) {
@@ -108,20 +141,24 @@ export const updateVerification = asyncHandler(async (req, res) => {
     profile.verificationSkippedAt = new Date();
   }
 
-  // Never auto-approve — admin reviews license/docs in RideRiteAdmin first.
-  if (isDriverVerificationComplete(profile)) {
-    profile.isApproved = false;
-    profile.verificationStatus = "pending";
-    profile.verificationSubmittedAt = new Date();
-  } else if (!skipForLater) {
-    // Become-driver form (docs may still be pending) — mark as submitted for review
-    if (profile.dlNumber && profile.insuranceCarrier && profile.dateOfBirth) {
+  // An approved driver stays approved: updated documents are reviewed one by one
+  // (documentReview) and only an expired document blocks driving.
+  if (!wasApproved) {
+    // Never auto-approve — admin reviews license/docs in RideRiteAdmin first.
+    if (isDriverVerificationComplete(profile)) {
       profile.isApproved = false;
       profile.verificationStatus = "pending";
-      profile.verificationSubmittedAt = profile.verificationSubmittedAt || new Date();
-    } else {
-      profile.isApproved = false;
-      profile.verificationStatus = "incomplete";
+      profile.verificationSubmittedAt = new Date();
+    } else if (!skipForLater) {
+      // Become-driver form (docs may still be pending) — mark as submitted for review
+      if (profile.dlNumber && profile.insuranceCarrier && profile.dateOfBirth) {
+        profile.isApproved = false;
+        profile.verificationStatus = "pending";
+        profile.verificationSubmittedAt = profile.verificationSubmittedAt || new Date();
+      } else {
+        profile.isApproved = false;
+        profile.verificationStatus = "incomplete";
+      }
     }
   }
 
@@ -132,6 +169,8 @@ export const updateVerification = asyncHandler(async (req, res) => {
     ok: true,
     user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
+    changedDocuments,
+    vehicleChangePending,
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
     testTools: testToolsEnabled(req.user),
   });
@@ -224,7 +263,7 @@ export const ensureDriverRole = asyncHandler(async (req, res) => {
 });
 
 /**
- * GET /api/driver/earnings — TRD 5.7 earnings dashboard: totals (today / 7 days / all time),
+ * GET /api/driver/earnings — TRD 5.7 earnings dashboard: totals (today / 7 days / month / all time),
  * per-trip breakdown (fare, commission, net), bonuses, deductions and payout history.
  */
 export const getEarnings = asyncHandler(async (req, res) => {
@@ -265,4 +304,87 @@ export const getEarnings = asyncHandler(async (req, res) => {
     deductions: entries.filter((e) => e.type === "deduction").map(row),
     payouts: payouts.map((p) => p.toSafeJSON()),
   });
+});
+
+const EARNING_TYPE_LABELS = {
+  trip: "Trip",
+  cancellation_fee: "Cancellation fee",
+  rental: "Rental host",
+  chauffeur: "Private driver",
+  bonus: "Bonus",
+  adjustment: "Adjustment",
+  deduction: "Deduction",
+};
+
+const csvCell = (v) => {
+  const s = v == null ? "" : String(v);
+  // Quote, and neutralise spreadsheet formulas in free text (addresses, descriptions)
+  const safe = /^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s) ? `'${s}` : s;
+  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+};
+const dollars = (cents) => ((cents || 0) / 100).toFixed(2);
+
+/**
+ * GET /api/driver/earnings/statement.csv?from=YYYY-MM-DD&to=YYYY-MM-DD — the signed-in
+ * driver's own ledger as CSV (one row per entry, newest first), then a payouts section.
+ */
+export const earningsStatementCsv = asyncHandler(async (req, res) => {
+  const from = req.query.from ? new Date(`${req.query.from}T00:00:00Z`) : null;
+  const to = req.query.to ? new Date(`${req.query.to}T00:00:00Z`) : null;
+  if ((from && Number.isNaN(from.getTime())) || (to && Number.isNaN(to.getTime()))) {
+    throw httpError(400, "from / to must be YYYY-MM-DD");
+  }
+  const filter = { driverId: req.user._id, status: { $ne: "void" } };
+  if (from || to) {
+    filter.earnedAt = {};
+    if (from) filter.earnedAt.$gte = from;
+    if (to) filter.earnedAt.$lt = new Date(to.getTime() + 86400000);
+  }
+  const [entries, payouts] = await Promise.all([
+    DriverEarning.find(filter).sort({ earnedAt: -1 }).limit(10000).lean(),
+    DriverPayout.find({ driverId: req.user._id }).sort({ createdAt: -1 }).limit(500).lean(),
+  ]);
+  const lines = [
+    ["date", "type", "description", "gross_usd", "commission_usd", "net_usd", "status", "payout_id", "paid_at"].join(","),
+  ];
+  let net = 0;
+  for (const e of entries) {
+    net += e.netCents;
+    lines.push(
+      [
+        new Date(e.earnedAt).toISOString(),
+        EARNING_TYPE_LABELS[e.type] || e.type,
+        e.description,
+        dollars(e.grossCents),
+        dollars(e.commissionCents),
+        dollars(e.netCents),
+        e.status,
+        e.payoutId ? String(e.payoutId) : "",
+        e.paidAt ? new Date(e.paidAt).toISOString() : "",
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+  }
+  lines.push(["", "Total", "", "", "", dollars(net), "", "", ""].map(csvCell).join(","));
+  lines.push("");
+  lines.push(["payout_date", "payout_id", "amount_usd", "items", "status", "test_payout"].join(","));
+  for (const p of payouts) {
+    lines.push(
+      [
+        new Date(p.paidAt || p.createdAt).toISOString(),
+        String(p._id),
+        dollars(p.amountCents),
+        p.entryCount,
+        p.status,
+        p.simulated ? "yes" : "no",
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+  }
+  const name = `riderite-earnings-${new Date().toISOString().slice(0, 10)}.csv`;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
+  res.send(`${lines.join("\n")}\n`);
 });

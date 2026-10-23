@@ -30,18 +30,23 @@ export const uploadAvatar = asyncHandler(async (req, res) => {
   });
 });
 
-/** POST /api/uploads/driver-docs — license front/back (fields: licenseFront, licenseBack) */
+/**
+ * POST /api/uploads/driver-docs — license front/back, vehicle registration and insurance
+ * (fields: licenseFront, licenseBack, registrationDoc, insuranceDoc)
+ */
 export const uploadDriverDocs = asyncHandler(async (req, res) => {
-  const front = req.files?.licenseFront?.[0];
-  const back = req.files?.licenseBack?.[0];
-  if (!front && !back) {
-    throw httpError(400, "Upload licenseFront and/or licenseBack");
-  }
-
-  const result = {
-    licenseFront: front ? fileToUploadResult(front, req) : null,
-    licenseBack: back ? fileToUploadResult(back, req) : null,
+  const pick = (field) => {
+    const f = req.files?.[field]?.[0];
+    return f ? fileToUploadResult(f, req) : null;
   };
-
+  const result = {
+    licenseFront: pick("licenseFront"),
+    licenseBack: pick("licenseBack"),
+    registrationDoc: pick("registrationDoc"),
+    insuranceDoc: pick("insuranceDoc"),
+  };
+  if (!Object.values(result).some(Boolean)) {
+    throw httpError(400, "Upload licenseFront, licenseBack, registrationDoc and/or insuranceDoc");
+  }
   res.status(201).json({ ok: true, files: result });
 });

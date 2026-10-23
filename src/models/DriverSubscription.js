@@ -32,6 +32,10 @@ const driverSubscriptionSchema = new mongoose.Schema(
     stripeSubscriptionId: { type: String, default: null, index: true },
     stripeCustomerId: { type: String, default: null },
     lastPaymentAt: { type: Date, default: null },
+    /** First time this driver's membership became active — maintenance schedule anchor (TRD 5.6) */
+    firstActiveAt: { type: Date, default: null },
+    /** Period end a "membership ends soon" notice was sent for (one per period) */
+    expiryNoticeFor: { type: Date, default: null },
   },
   { timestamps: true },
 );
@@ -52,6 +56,7 @@ driverSubscriptionSchema.methods.toSafeJSON = function toSafeJSON() {
     currentPeriodStart: this.currentPeriodStart,
     currentPeriodEnd: this.currentPeriodEnd,
     cancelAtPeriodEnd: this.cancelAtPeriodEnd,
+    firstActiveAt: this.firstActiveAt,
     active: this.isActiveNow(),
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,

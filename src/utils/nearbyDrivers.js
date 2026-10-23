@@ -1,6 +1,7 @@
 import { DriverProfile } from "../models/DriverProfile.js";
 import { DriverSubscription } from "../models/DriverSubscription.js";
 import { Trip } from "../models/Trip.js";
+import { notExpiredFilter } from "./driverDocuments.js";
 
 /**
  * A driver's GPS counts as live for this long after the last ping.
@@ -28,7 +29,7 @@ export function haversineMiles(a, b) {
 
 /**
  * Drivers who can take a ride right now, within radiusMiles of (lat, lng):
- * online, admin-approved, Stripe Connect ready, active subscription,
+ * online, admin-approved, Stripe Connect ready, active subscription, no expired document,
  * a live GPS ping, and not already on a trip. Sorted nearest first.
  *
  * Drivers without a live location are excluded rather than shown at a
@@ -55,6 +56,8 @@ export async function findNearbyOnlineDrivers({
     "lastLocation.updatedAt": { $gte: new Date(Date.now() - DRIVER_LOCATION_FRESH_MS) },
     "lastLocation.lat": { $gte: lat - dLat, $lte: lat + dLat },
     "lastLocation.lng": { $gte: lng - dLng, $lte: lng + dLng },
+    // No expired license / registration / insurance
+    ...notExpiredFilter(),
   };
   if (vehicleType) filter.vehicleType = vehicleType;
 
