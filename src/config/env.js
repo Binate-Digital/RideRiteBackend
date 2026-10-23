@@ -71,4 +71,45 @@ export const env = {
   dispatchMaxMinutes: Math.max(1, Number(process.env.DISPATCH_MAX_MINUTES) || 5),
   /** How often the sweeper advances expired offers (covers restarts / lost timers). */
   dispatchSweepSeconds: Math.max(1, Number(process.env.DISPATCH_SWEEP_SECONDS) || 5),
+  /**
+   * Card ride that found no driver: wait this long before refunding it (0 = refund the moment
+   * dispatch gives up). While waiting, the rider may re-request and reuse the payment.
+   */
+  noDriversRefundDelaySeconds: Math.max(0, Number(process.env.NO_DRIVERS_REFUND_DELAY_SECONDS) || 0),
+
+  /** Platform share of a ride's base fare (driver gets the rest). Service fee + tax stay with the platform. */
+  platformCommissionRate: rate(process.env.PLATFORM_COMMISSION_RATE, 0.2),
+  /** Platform share of a peer-to-peer rental subtotal. Fleet rentals are 100% platform revenue. */
+  rentalCommissionRate: rate(process.env.RENTAL_COMMISSION_RATE, 0.15),
+  /** How long an unpaid rental / chauffeur booking holds its slot before it is released. */
+  bookingHoldSeconds: Math.max(1, Number(process.env.BOOKING_HOLD_SECONDS) || 15 * 60),
+  /** How often the payments sweeper releases expired holds and retries pending refunds. */
+  paymentSweepSeconds: Math.max(1, Number(process.env.PAYMENT_SWEEP_SECONDS) || 30),
+
+  /** Private driver hourly rates by vehicle type (cents) and minimum notice before startAt. */
+  chauffeurHourlyCents: {
+    sedan: Number(process.env.CHAUFFEUR_HOURLY_SEDAN_CENTS) || 6500,
+    suv: Number(process.env.CHAUFFEUR_HOURLY_SUV_CENTS) || 8500,
+    truck: Number(process.env.CHAUFFEUR_HOURLY_TRUCK_CENTS) || 9500,
+  },
+  chauffeurMinLeadMinutes: Math.max(0, Number(process.env.CHAUFFEUR_MIN_LEAD_MINUTES ?? 60) || 0),
+
+  /** Driver subscription Stripe Prices. Empty → looked up / created by lookup_key. */
+  stripePriceMonthly: process.env.STRIPE_PRICE_DRIVER_MONTHLY || "",
+  stripePriceWeekly: process.env.STRIPE_PRICE_DRIVER_WEEKLY || "",
+
+  /** SMTP for receipts and account emails. Unset → emails are printed to the console. */
+  smtp: {
+    host: process.env.SMTP_HOST || "",
+    port: Number(process.env.SMTP_PORT) || 587,
+    user: process.env.SMTP_USER || "",
+    pass: process.env.SMTP_PASS || "",
+    from: process.env.SMTP_FROM || "",
+    secure: String(process.env.SMTP_SECURE || "").toLowerCase() === "true",
+  },
 };
+
+function rate(raw, fallback) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 && n < 1 && raw !== "" && raw != null ? n : fallback;
+}

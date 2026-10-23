@@ -24,6 +24,9 @@ router.get("/trips", admin.listTrips);
 router.patch("/trips/:id/refund", admin.refundTrip);
 router.get("/cancellations", admin.listCancellations);
 
+router.post("/payouts/run", admin.runDriverPayouts);
+router.get("/payouts", admin.listPayouts);
+
 router.get("/subscriptions", admin.listSubscriptions);
 
 router.get("/rentals/listings", admin.listRentalListings);

@@ -29,6 +29,10 @@ import {
   stopDispatch,
 } from "../utils/dispatch.js";
 import { tripWithDriver, tripsWithDrivers } from "../utils/tripDrivers.js";
+import { settleTripRefund } from "../utils/refunds.js";
+import { recordCancellationFeeEarning, recordTripEarning } from "../utils/earnings.js";
+import { rideReceiptEmail, sendMail } from "../utils/mailer.js";
+import { User } from "../models/User.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
 /** Rider has a ride in flight — can't book another until it ends. */
@@ -227,7 +231,10 @@ export const cancel = asyncHandler(async (req, res) => {
   let cancelStatus = "no_charge";
   let message = "";
 
-  if (trip.status === "pending_payment" || !trip.paid) {
+  // Pay-on-pickup trips are never charged up front, so there is nothing to refund or keep
+  const chargedOnline = trip.paid && !OFFLINE_PAY.has(trip.paymentMethod);
+
+  if (trip.status === "pending_payment" || !chargedOnline) {
     cancelStatus = "no_charge";
     message = "Ride canceled. No payment was taken.";
   } else if (!driverEnRoute) {
@@ -254,13 +261,22 @@ export const cancel = asyncHandler(async (req, res) => {
         refundCents,
         offeredDriverId: null,
         offerExpiresAt: null,
+        // The Stripe refund below settles this; the payments sweeper retries a failure
+        ...(refundCents > 0 ? { paymentStatus: "refund_pending" } : {}),
       },
     },
     { new: true },
   );
   if (!cancelled) throw httpError(409, "The ride just changed — refresh and try again");
+  let finalTrip = cancelled;
+  if (refundCents > 0) {
+    const settled = await settleTripRefund(cancelled, { reason: "rider cancelled" });
+    if (settled?.trip) finalTrip = settled.trip;
+  }
+  // TRD 4.7: the late-cancel fee compensates the driver for time and travel
+  if (feeCents > 0) await recordCancellationFeeEarning(cancelled, feeCents);
   stopDispatch(trip._id);
-  broadcastTrip(cancelled);
+  broadcastTrip(finalTrip);
   // Also closes the radar of a driver holding the offer right now
   broadcastRideClosed(trip._id);
 
@@ -286,7 +302,7 @@ export const cancel = asyncHandler(async (req, res) => {
     feeCents,
     refundCents,
     message,
-    trip: cancelled.toSafeJSON(),
+    trip: finalTrip.toSafeJSON(),
   });
 });
 
@@ -324,6 +340,7 @@ export const retry = asyncHandler(async (req, res) => {
         status: "requested",
         requestedAt: new Date(),
         paymentStatus: isOffline ? trip.paymentStatus : "paid",
+        refundCents: 0,
         offeredDriverId: null,
         offeredAt: null,
         offerExpiresAt: null,
@@ -524,6 +541,15 @@ export const updateStatus = asyncHandler(async (req, res) => {
   await trip.save();
   broadcastTrip(trip);
 
+  if (status === "completed") {
+    try {
+      await recordTripEarning(trip);
+    } catch (err) {
+      console.error(`[earnings] trip ${trip._id} not recorded:`, err.message);
+    }
+    void sendRideReceipt(trip);
+  }
+
   try {
     const { notifyUser } = await import("./notifications.controller.js");
     const STATUS_COPY = {
@@ -563,6 +589,17 @@ export const updateStatus = asyncHandler(async (req, res) => {
     trip: trip.toSafeJSON(),
   });
 });
+
+/** Emailed digital receipt (TRD 4.7); the on-screen receipt is unchanged. Never throws. */
+async function sendRideReceipt(trip) {
+  try {
+    const rider = await User.findById(trip.riderId).select("fullName email");
+    if (!rider?.email) return;
+    await sendMail({ to: rider.email, ...rideReceiptEmail({ fullName: rider.fullName, trip }) });
+  } catch (err) {
+    console.error(`[receipt] trip ${trip._id}:`, err.message);
+  }
+}
 
 export const rate = asyncHandler(async (req, res) => {
   const data = rateRideSchema.parse(req.body);

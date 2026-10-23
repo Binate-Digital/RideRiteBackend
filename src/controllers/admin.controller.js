@@ -11,8 +11,12 @@ import { MaintenanceRecord } from "../models/MaintenanceRecord.js";
 import { AuditLog } from "../models/AuditLog.js";
 import { PromoCode } from "../models/PromoCode.js";
 import { z } from "zod";
+import { DriverEarning } from "../models/DriverEarning.js";
+import { DriverPayout } from "../models/DriverPayout.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
+import { findTripPayment, refundPayment } from "../utils/refunds.js";
+import { runPayouts } from "../utils/payouts.js";
 
 async function audit(actorId, action, targetType, targetId, meta = {}) {
   try {
@@ -469,7 +473,7 @@ export const updateMaintenance = asyncHandler(async (req, res) => {
 
 /** GET /api/admin/revenue */
 export const revenue = asyncHandler(async (_req, res) => {
-  const [tripGross, paidOnline, cancelFees, subs, rentalCommission, chauffeurGross] =
+  const [tripGross, paidOnline, cancelFees, subs, rentalCommission, chauffeurGross, ledger, refunds] =
     await Promise.all([
       Trip.aggregate([
         { $match: { status: "completed" } },
@@ -495,7 +499,20 @@ export const revenue = asyncHandler(async (_req, res) => {
         { $match: { paid: true } },
         { $group: { _id: null, total: { $sum: "$totalCents" } } },
       ]),
+      DriverEarning.aggregate([
+        { $match: { status: { $ne: "void" } } },
+        {
+          $group: {
+            _id: "$type",
+            commission: { $sum: "$commissionCents" },
+            net: { $sum: "$netCents" },
+            paid: { $sum: { $cond: [{ $eq: ["$status", "paid"] }, "$netCents", 0] } },
+          },
+        },
+      ]),
+      Payment.aggregate([{ $group: { _id: null, total: { $sum: "$refundedCents" } } }]),
     ]);
+  const ledgerBy = Object.fromEntries(ledger.map((l) => [l._id, l]));
 
   res.json({
     ok: true,
@@ -506,6 +523,10 @@ export const revenue = asyncHandler(async (_req, res) => {
     rentalCommissionCents: rentalCommission[0]?.commission ?? 0,
     rentalVolumeCents: rentalCommission[0]?.volume ?? 0,
     chauffeurGrossCents: chauffeurGross[0]?.total ?? 0,
+    rideCommissionCents: ledgerBy.trip?.commission ?? 0,
+    driverEarningsCents: ledger.reduce((a, l) => a + (l._id === "deduction" ? 0 : l.net), 0),
+    driverPaidOutCents: ledger.reduce((a, l) => a + l.paid, 0),
+    refundedCents: refunds[0]?.total ?? 0,
   });
 });
 
@@ -530,16 +551,84 @@ export const listCancellations = asyncHandler(async (_req, res) => {
   });
 });
 
-/** PATCH /api/admin/trips/:id/refund — body: { refundCents } */
+/**
+ * PATCH /api/admin/trips/:id/refund — body: { refundCents, reason? }
+ * Refunds through Stripe (simulated in mock mode), capped at what is still refundable on the
+ * trip's card payment. Only trips paid online can be refunded. Audit-logged.
+ */
 export const refundTrip = asyncHandler(async (req, res) => {
   const trip = await Trip.findById(req.params.id);
   if (!trip) throw httpError(404, "Trip not found");
-  const refundCents = Math.max(0, Number(req.body?.refundCents) || 0);
-  trip.refundCents = refundCents;
-  trip.paymentStatus = refundCents >= trip.fareCents ? "refunded" : "partial_refund";
+  const requested = Math.round(Number(req.body?.refundCents) || 0);
+  if (requested <= 0) throw httpError(400, "refundCents must be a positive amount");
+  const payment = trip.paid ? await findTripPayment(trip._id) : null;
+  if (!payment) throw httpError(400, "This trip has no online payment to refund (unpaid or paid in cash)");
+  const remaining = payment.amountCents - (payment.refundedCents || 0);
+  if (remaining <= 0) throw httpError(400, "This trip's payment is already fully refunded");
+
+  const reason = String(req.body?.reason || "admin refund").slice(0, 200);
+  const result = await refundPayment(payment, Math.min(requested, remaining), { reason });
+  if (!result) throw httpError(400, "Nothing left to refund on this payment");
+  const after = await Payment.findById(payment._id);
+  trip.refundCents = after.refundedCents;
+  trip.paymentStatus = after.refundedCents >= after.amountCents ? "refunded" : "partial_refund";
   await trip.save();
-  await audit(req.user._id, "trip.refund", "Trip", trip._id.toString(), { refundCents });
-  res.json({ ok: true, trip: trip.toSafeJSON() });
+  await audit(req.user._id, "trip.refund", "Trip", trip._id.toString(), {
+    requestedCents: requested,
+    refundedCents: result.amountCents,
+    totalRefundedCents: after.refundedCents,
+    refundId: result.refundId,
+    simulated: result.simulated,
+    reason,
+  });
+  res.json({
+    ok: true,
+    refund: { ...result, capped: result.amountCents < requested },
+    trip: trip.toSafeJSON(),
+    payment: after.toSafeJSON(),
+  });
+});
+
+/**
+ * POST /api/admin/payouts/run — body: { driverId? }
+ * Transfers every driver's pending earnings to their Stripe Connect account (simulated in
+ * mock mode and for seeded acct_seedtest_* accounts).
+ */
+export const runDriverPayouts = asyncHandler(async (req, res) => {
+  const driverId = req.body?.driverId ? String(req.body.driverId) : null;
+  if (driverId && !/^[a-f0-9]{24}$/i.test(driverId)) throw httpError(400, "Invalid driverId");
+  const results = await runPayouts({ driverId, initiatedBy: req.user._id });
+  const paid = results.filter((r) => r.payout?.status === "paid");
+  await audit(req.user._id, "payouts.run", "DriverPayout", driverId || "all", {
+    drivers: results.length,
+    paid: paid.length,
+    totalCents: paid.reduce((a, r) => a + r.payout.amountCents, 0),
+  });
+  res.json({ ok: true, results });
+});
+
+/** GET /api/admin/payouts?driverId=&status= */
+export const listPayouts = asyncHandler(async (req, res) => {
+  const filter = {};
+  if (req.query.driverId && /^[a-f0-9]{24}$/i.test(String(req.query.driverId))) filter.driverId = req.query.driverId;
+  if (["processing", "paid", "failed"].includes(String(req.query.status))) filter.status = req.query.status;
+  const rows = await DriverPayout.find(filter).sort({ createdAt: -1 }).limit(200);
+  const users = await User.find({ _id: { $in: rows.map((r) => r.driverId) } }).select("fullName email").lean();
+  const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  const pending = await DriverEarning.aggregate([
+    { $match: { status: "pending" } },
+    { $group: { _id: null, total: { $sum: "$netCents" }, drivers: { $addToSet: "$driverId" } } },
+  ]);
+  res.json({
+    ok: true,
+    pendingCents: pending[0]?.total ?? 0,
+    pendingDrivers: pending[0]?.drivers?.length ?? 0,
+    payouts: rows.map((p) => ({
+      ...p.toSafeJSON(),
+      fullName: byId.get(p.driverId.toString())?.fullName ?? null,
+      email: byId.get(p.driverId.toString())?.email ?? null,
+    })),
+  });
 });
 
 /** GET /api/admin/export/users.csv */

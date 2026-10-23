@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { tripEarningBreakdown } from "../utils/earnings.js";
 
 export const TRIP_STATUSES = [
   "pending_payment",
@@ -80,6 +81,8 @@ const tripSchema = new mongoose.Schema(
         "paid",
         // Card was charged but no driver took the ride; the refund job issues the Stripe refund
         "refund_pending",
+        // A refund is being sent to Stripe right now (see utils/refunds settleTripRefund)
+        "refunding",
         "refunded",
         "partial_refund",
         "failed",
@@ -153,6 +156,8 @@ tripSchema.methods.toSafeJSON = function toSafeJSON() {
       discountCents: this.discountCents,
       totalCents: this.fareCents,
     },
+    /** What the driver earns for this trip (base fare − platform commission) */
+    driverEarningsCents: tripEarningBreakdown(this).netCents,
     promoCode: this.promoCode,
     paymentMethod: this.paymentMethod,
     paid: this.paid,

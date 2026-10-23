@@ -18,6 +18,9 @@ import { driverHasActiveSubscription } from "./subscriptions.controller.js";
 import { relayDriverLocation } from "../realtime/index.js";
 import { Trip } from "../models/Trip.js";
 import { declineOffer } from "../utils/dispatch.js";
+import { driverEarningsSummary } from "../utils/earnings.js";
+import { DriverPayout } from "../models/DriverPayout.js";
+import { env as appEnv } from "../config/env.js";
 
 /** Seeded QA accounts (scripts/seed-test-accounts*) use this email domain. */
 const TEST_ACCOUNT_DOMAIN = "@riderite.test";
@@ -213,5 +216,48 @@ export const ensureDriverRole = asyncHandler(async (req, res) => {
     driver: profile.toSafeJSON(),
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
     testTools: testToolsEnabled(req.user),
+  });
+});
+
+/**
+ * GET /api/driver/earnings — TRD 5.7 earnings dashboard: totals (today / 7 days / all time),
+ * per-trip breakdown (fare, commission, net), bonuses, deductions and payout history.
+ */
+export const getEarnings = asyncHandler(async (req, res) => {
+  const [{ totals, entries }, payouts] = await Promise.all([
+    driverEarningsSummary(req.user._id),
+    DriverPayout.find({ driverId: req.user._id }).sort({ createdAt: -1 }).limit(50),
+  ]);
+  const tripIds = entries.filter((e) => e.tripId).map((e) => e.tripId);
+  const trips = await Trip.find({ _id: { $in: tripIds } })
+    .select("pickupAddress destinationAddress fareCents paymentMethod completedAt cancelledAt status")
+    .lean();
+  const tripById = new Map(trips.map((t) => [String(t._id), t]));
+  const row = (e) => {
+    const t = e.tripId ? tripById.get(String(e.tripId)) : null;
+    return {
+      ...e.toSafeJSON(),
+      trip: t
+        ? {
+            pickupAddress: t.pickupAddress,
+            destinationAddress: t.destinationAddress,
+            riderPaidCents: t.fareCents,
+            paymentMethod: t.paymentMethod,
+            status: t.status,
+          }
+        : null,
+    };
+  };
+  res.json({
+    ok: true,
+    commissionRate: appEnv.platformCommissionRate,
+    totals,
+    trips: entries.filter((e) => e.type === "trip").map(row),
+    cancellationFees: entries.filter((e) => e.type === "cancellation_fee").map(row),
+    rentals: entries.filter((e) => e.type === "rental").map(row),
+    bonuses: entries.filter((e) => e.type === "bonus").map(row),
+    adjustments: entries.filter((e) => e.type === "adjustment").map(row),
+    deductions: entries.filter((e) => e.type === "deduction").map(row),
+    payouts: payouts.map((p) => p.toSafeJSON()),
   });
 });

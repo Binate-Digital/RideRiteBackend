@@ -3,6 +3,7 @@ import { env } from "../config/env.js";
 import { findNearbyOnlineDrivers, haversineMiles } from "./nearbyDrivers.js";
 import { broadcastTrip, emitToUser } from "../realtime/index.js";
 import { notifyUser } from "../controllers/notifications.controller.js";
+import { settleTripRefund } from "./refunds.js";
 
 /**
  * Ride dispatch (TRD 4.3 / 5.3): a requested trip is offered to ONE driver at a
@@ -123,19 +124,23 @@ export async function advanceDispatch(
           offeredAt: null,
           offerExpiresAt: null,
           dispatchStartedAt: startedAt,
-          // A card ride that never got a driver is owed its money back. The
-          // refund itself is issued by the Stripe refund job, which picks up
-          // trips in this state; until then the rider may also re-request and
-          // reuse the payment (see rides.controller `retry`).
+          // A card ride that never got a driver is owed its money back. It is
+          // refunded right below (or by the payments sweeper after
+          // NO_DRIVERS_REFUND_DELAY_SECONDS, during which the rider may re-request
+          // and reuse the payment — see rides.controller `retry`).
           ...(trip.paid && !OFFLINE_PAY.includes(trip.paymentMethod)
-            ? { paymentStatus: "refund_pending" }
+            ? { paymentStatus: "refund_pending", refundCents: trip.fareCents }
             : {}),
         },
       };
   if (current) update.$addToSet = { dispatchDeclinedDriverIds: trip.offeredDriverId };
 
-  const updated = await Trip.findOneAndUpdate(guard, update, { new: true });
+  let updated = await Trip.findOneAndUpdate(guard, update, { new: true });
   if (!updated) return null; // someone else (accept / cancel / other path) moved it first
+  if (!next && updated.paymentStatus === "refund_pending" && env.noDriversRefundDelaySeconds === 0) {
+    const settled = await settleTripRefund(updated, { reason: "no drivers available" });
+    if (settled?.trip) updated = settled.trip;
+  }
 
   clearOfferTimer(trip._id);
   // The previous driver's offer is gone — their radar closes now
@@ -149,9 +154,11 @@ export async function advanceDispatch(
       category: "ride",
       title: "No drivers available",
       body:
-        updated.paymentStatus === "refund_pending"
-          ? "No driver accepted your ride. Try again, or cancel — your card payment will be refunded."
-          : "No driver accepted your ride right now. Try again in a few minutes.",
+        updated.paymentStatus === "refunded"
+          ? "No driver accepted your ride, so your card payment has been refunded in full. Please book again."
+          : updated.paymentStatus === "refund_pending"
+            ? "No driver accepted your ride. Try again, or cancel — your card payment will be refunded."
+            : "No driver accepted your ride right now. Try again in a few minutes.",
       data: { tripId: String(updated._id), status: "no_drivers", href: `/book?trip_id=${updated._id}` },
     });
   }

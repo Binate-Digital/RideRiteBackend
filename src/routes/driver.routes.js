@@ -17,6 +17,7 @@ router.post("/online", driver.goOnline);
 router.post("/offline", driver.goOffline);
 router.post("/location", driver.updateLocation);
 router.get("/bonus/me", bonus.getMine);
+router.get("/earnings", driver.getEarnings);
 router.get("/maintenance", maintenance.listMine);
 router.post("/maintenance", maintenance.requestService);
 

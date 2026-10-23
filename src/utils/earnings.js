@@ -1,0 +1,133 @@
+import { DriverEarning } from "../models/DriverEarning.js";
+import { env } from "../config/env.js";
+
+const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
+
+/**
+ * Driver's share of a ride. Commission is taken on the base fare (meter + booking fee) only:
+ * the service fee and sales tax are platform revenue / pass-through, and promo discounts are
+ * platform-funded, so they never reduce what the driver earns.
+ */
+export function tripEarningBreakdown(trip) {
+  const grossCents = Math.max(0, Math.round(trip.baseFareCents || 0));
+  const commissionCents = Math.round(grossCents * env.platformCommissionRate);
+  return { grossCents, commissionCents, netCents: grossCents - commissionCents };
+}
+
+/** Insert once; a duplicate (same trip/booking + type) is the earlier entry. */
+async function insertOnce(doc) {
+  try {
+    return await DriverEarning.create(doc);
+  } catch (err) {
+    if (err?.code !== 11000) throw err;
+    const key = doc.tripId ? { tripId: doc.tripId } : { rentalBookingId: doc.rentalBookingId };
+    return DriverEarning.findOne({ ...key, type: doc.type });
+  }
+}
+
+/**
+ * Completed trip → ledger. Card trips are owed to the driver (pending payout). Pay-on-pickup
+ * trips: the driver already holds the whole fare, so the trip entry is `collected` and a
+ * deduction of (fare − net) is what they owe back, netted against their next payout.
+ */
+export async function recordTripEarning(trip) {
+  if (!trip?.driverId) return null;
+  const { grossCents, commissionCents, netCents } = tripEarningBreakdown(trip);
+  const offline = OFFLINE_PAY.has(trip.paymentMethod);
+  const route = `${trip.pickupAddress} → ${trip.destinationAddress}`;
+  const earnedAt = trip.completedAt || new Date();
+  const entry = await insertOnce({
+    driverId: trip.driverId,
+    type: "trip",
+    tripId: trip._id,
+    grossCents,
+    commissionCents,
+    netCents,
+    description: route,
+    status: offline ? "collected" : "pending",
+    earnedAt,
+  });
+  if (offline) {
+    const owed = (trip.fareCents || 0) - netCents;
+    if (owed > 0) {
+      await insertOnce({
+        driverId: trip.driverId,
+        type: "deduction",
+        tripId: trip._id,
+        netCents: -owed,
+        description: `${trip.paymentMethod} fare collected by driver (platform share)`,
+        earnedAt,
+      });
+    }
+  }
+  return entry;
+}
+
+/** Late-cancel fee goes to the driver in full (TRD 4.7: fees compensate drivers). */
+export async function recordCancellationFeeEarning(trip, feeCents) {
+  if (!trip?.driverId || !(feeCents > 0)) return null;
+  return insertOnce({
+    driverId: trip.driverId,
+    type: "cancellation_fee",
+    tripId: trip._id,
+    grossCents: feeCents,
+    commissionCents: 0,
+    netCents: feeCents,
+    description: "Rider cancelled after you were en route",
+  });
+}
+
+/** Peer-to-peer rental paid → owner's share is owed to them (fleet rentals: platform revenue). */
+export async function recordRentalOwnerEarning(booking) {
+  if (booking.source !== "peer") return null;
+  const grossCents = booking.subtotalCents;
+  return insertOnce({
+    driverId: booking.ownerId,
+    type: "rental",
+    rentalBookingId: booking._id,
+    grossCents,
+    commissionCents: booking.commissionCents,
+    netCents: grossCents - booking.commissionCents,
+    description: `Rental ${new Date(booking.startDate).toISOString().slice(0, 10)} → ${new Date(booking.endDate).toISOString().slice(0, 10)}`,
+  });
+}
+
+function startOfTodayUtc(now = new Date()) {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+/**
+ * Driver earnings summary. "Earned" totals count what the driver made (trips net, fees,
+ * rentals, bonuses, adjustments); deductions are listed separately and reduce the payout
+ * balance, not the earnings.
+ */
+export async function driverEarningsSummary(driverId) {
+  const entries = await DriverEarning.find({ driverId, status: { $ne: "void" } })
+    .sort({ earnedAt: -1 })
+    .limit(1000);
+  const today = startOfTodayUtc().getTime();
+  const weekAgo = Date.now() - 7 * 86400000;
+  const totals = {
+    todayCents: 0,
+    weekCents: 0,
+    allTimeCents: 0,
+    commissionCents: 0,
+    deductionsCents: 0,
+    pendingPayoutCents: 0,
+    paidOutCents: 0,
+  };
+  for (const e of entries) {
+    const at = new Date(e.earnedAt).getTime();
+    if (e.type === "deduction") {
+      totals.deductionsCents += -e.netCents;
+    } else {
+      totals.allTimeCents += e.netCents;
+      if (at >= today) totals.todayCents += e.netCents;
+      if (at >= weekAgo) totals.weekCents += e.netCents;
+      totals.commissionCents += e.commissionCents || 0;
+    }
+    if (e.status === "pending" || e.status === "processing") totals.pendingPayoutCents += e.netCents;
+    if (e.status === "paid") totals.paidOutCents += e.netCents;
+  }
+  return { totals, entries };
+}

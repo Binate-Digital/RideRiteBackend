@@ -16,14 +16,17 @@ const paymentSchema = new mongoose.Schema(
     },
     purpose: {
       type: String,
-      enum: ["ride", "setup_card", "refund"],
+      enum: ["ride", "setup_card", "refund", "rental", "chauffeur", "subscription"],
       default: "ride",
+      index: true,
     },
+    /** Rental / chauffeur booking or driver subscription this payment is for. */
+    refId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
     amountCents: { type: Number, required: true },
     currency: { type: String, default: "usd" },
     status: {
       type: String,
-      enum: ["pending", "succeeded", "failed", "canceled", "refunded"],
+      enum: ["pending", "succeeded", "failed", "canceled", "refunded", "partially_refunded"],
       default: "pending",
       index: true,
     },
@@ -35,6 +38,22 @@ const paymentSchema = new mongoose.Schema(
     stripePaymentIntentId: { type: String, default: null, index: true },
     stripeSetupIntentId: { type: String, default: null },
     paymentMethodType: { type: String, default: null },
+    stripeInvoiceId: { type: String, default: null, index: true },
+    /** Total refunded so far (cents); never more than amountCents. */
+    refundedCents: { type: Number, default: 0 },
+    refunds: {
+      type: [
+        {
+          _id: false,
+          refundId: String,
+          amountCents: Number,
+          reason: String,
+          simulated: Boolean,
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true },
@@ -45,6 +64,7 @@ paymentSchema.methods.toSafeJSON = function toSafeJSON() {
     id: this._id.toString(),
     userId: this.userId.toString(),
     tripId: this.tripId ? this.tripId.toString() : null,
+    refId: this.refId ? this.refId.toString() : null,
     purpose: this.purpose,
     amountCents: this.amountCents,
     currency: this.currency,
@@ -52,6 +72,8 @@ paymentSchema.methods.toSafeJSON = function toSafeJSON() {
     provider: this.provider,
     stripePaymentIntentId: this.stripePaymentIntentId,
     paymentMethodType: this.paymentMethodType,
+    refundedCents: this.refundedCents,
+    refunds: this.refunds,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

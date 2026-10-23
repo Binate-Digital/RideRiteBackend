@@ -14,16 +14,22 @@ const rentalBookingSchema = new mongoose.Schema(
     totalCents: { type: Number, required: true },
     status: {
       type: String,
-      enum: ["pending_payment", "confirmed", "active", "completed", "cancelled"],
+      // expired: payment not completed before holdExpiresAt — its dates were released
+      enum: ["pending_payment", "confirmed", "active", "completed", "cancelled", "expired"],
       default: "pending_payment",
       index: true,
     },
     paid: { type: Boolean, default: false },
     paymentStatus: {
       type: String,
-      enum: ["unpaid", "paid", "refunded", "failed"],
+      enum: ["unpaid", "pending", "paid", "refunded", "failed"],
       default: "unpaid",
     },
+    source: { type: String, enum: ["peer", "fleet"], default: "peer" },
+    /** Unpaid bookings release their day slots after this. */
+    holdExpiresAt: { type: Date, default: null, index: true },
+    paidAt: { type: Date, default: null },
+    stripePaymentIntentId: { type: String, default: null, index: true },
   },
   { timestamps: true },
 );
@@ -44,6 +50,9 @@ rentalBookingSchema.methods.toSafeJSON = function toSafeJSON() {
     status: this.status,
     paid: this.paid,
     paymentStatus: this.paymentStatus,
+    source: this.source,
+    holdExpiresAt: this.holdExpiresAt,
+    paidAt: this.paidAt,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

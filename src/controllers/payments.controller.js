@@ -8,8 +8,16 @@ import { env } from "../config/env.js";
 import { ensureStripeCustomer, getStripe, isStripeMock } from "../lib/stripe.js";
 import { broadcastTrip } from "../realtime/index.js";
 import { startDispatch } from "../utils/dispatch.js";
+import { StripeEvent } from "../models/StripeEvent.js";
+import { confirmRentalPaid, failRentalPayment } from "../utils/rentalBooking.js";
+import { confirmChauffeurPaid, failChauffeurPayment } from "../utils/chauffeurBooking.js";
+import {
+  applyStripeSubscription,
+  handleInvoicePaid,
+  handleInvoicePaymentFailed,
+  handleSubscriptionDeleted,
+} from "../utils/subscriptionBilling.js";
 
-const CARD_LIKE = new Set(["card", "cashapp", "paypal"]);
 const OFFLINE = new Set(["cash", "venmo", "zelle"]);
 
 async function loadRiderTrip(tripId, userId) {
@@ -414,55 +422,115 @@ export const listMyPayments = asyncHandler(async (req, res) => {
   res.json({ ok: true, payments: payments.map((p) => p.toSafeJSON()) });
 });
 
+/** Shape of the Stripe payment_intent we act on (purpose from our metadata). */
+async function onIntentSucceeded(pi) {
+  const purpose = pi.metadata?.purpose || (pi.metadata?.tripId ? "ride" : null);
+  const method = pi.payment_method_types?.[0] || "card";
+  if (purpose === "ride" && pi.metadata?.tripId) {
+    const trip = await Trip.findById(pi.metadata.tripId);
+    if (trip && !trip.paid) {
+      await markTripPaid(trip, { provider: "stripe", paymentIntentId: pi.id, paymentMethodType: method });
+    }
+    return "ride";
+  }
+  if (purpose === "rental" && pi.metadata?.refId) {
+    await confirmRentalPaid(pi.metadata.refId, { paymentIntentId: pi.id, provider: "stripe" });
+    return "rental";
+  }
+  if (purpose === "chauffeur" && pi.metadata?.refId) {
+    await confirmChauffeurPaid(pi.metadata.refId, { paymentIntentId: pi.id, provider: "stripe" });
+    return "chauffeur";
+  }
+  // Subscription invoices' intents carry no purpose — invoice.paid handles them
+  return null;
+}
+
+async function onIntentFailed(pi) {
+  const purpose = pi.metadata?.purpose || (pi.metadata?.tripId ? "ride" : null);
+  if (purpose === "ride" && pi.metadata?.tripId) {
+    await Trip.updateOne({ _id: pi.metadata.tripId, paid: false }, { paymentStatus: "failed" });
+    await Payment.findOneAndUpdate({ stripePaymentIntentId: pi.id }, { status: "failed" });
+    return "ride";
+  }
+  if (purpose === "rental" && pi.metadata?.refId) {
+    await failRentalPayment(pi.metadata.refId, pi.id);
+    return "rental";
+  }
+  if (purpose === "chauffeur" && pi.metadata?.refId) {
+    await failChauffeurPayment(pi.metadata.refId, pi.id);
+    return "chauffeur";
+  }
+  return null;
+}
+
+/**
+ * Apply one Stripe event. Idempotent: an event id is acted on once (Stripe retries
+ * deliveries), and every handler is itself a conditional update, so replays are no-ops.
+ * Exported so tests can feed constructed events.
+ */
+export async function handleStripeEvent(event) {
+  if (!event?.id || !event.type) throw httpError(400, "Malformed event");
+  if (await StripeEvent.exists({ eventId: event.id })) {
+    return { duplicate: true, type: event.type };
+  }
+  const obj = event.data?.object || {};
+  let handled = null;
+  switch (event.type) {
+    case "payment_intent.succeeded":
+      handled = await onIntentSucceeded(obj);
+      break;
+    case "payment_intent.payment_failed":
+      handled = await onIntentFailed(obj);
+      break;
+    case "invoice.paid":
+    case "invoice.payment_succeeded":
+      handled = (await handleInvoicePaid(obj)) ? "subscription" : null;
+      break;
+    case "invoice.payment_failed":
+      handled = (await handleInvoicePaymentFailed(obj)) ? "subscription" : null;
+      break;
+    case "customer.subscription.created":
+    case "customer.subscription.updated":
+      handled = (await applyStripeSubscription(obj)) ? "subscription" : null;
+      break;
+    case "customer.subscription.deleted":
+      handled = (await handleSubscriptionDeleted(obj)) ? "subscription" : null;
+      break;
+    default:
+      break;
+  }
+  await StripeEvent.create({ eventId: event.id, type: event.type }).catch((err) => {
+    if (err?.code !== 11000) throw err;
+  });
+  return { duplicate: false, type: event.type, handled };
+}
+
 /**
  * Stripe webhook — mount with express.raw before json parser.
+ * Mock mode in development accepts unsigned JSON events so the handlers can be exercised
+ * locally (there is no Stripe to sign them); everywhere else the signature is required.
  */
 export const stripeWebhook = asyncHandler(async (req, res) => {
-  if (isStripeMock()) {
-    return res.json({ ok: true, ignored: true, reason: "mock mode" });
-  }
-  if (!env.stripeWebhookSecret) {
-    throw httpError(503, "STRIPE_WEBHOOK_SECRET not configured");
-  }
-
-  const stripe = getStripe();
-  const sig = req.headers["stripe-signature"];
   let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, env.stripeWebhookSecret);
-  } catch (err) {
-    throw httpError(400, `Webhook signature verification failed: ${err.message}`);
-  }
-
-  if (event.type === "payment_intent.succeeded") {
-    const pi = event.data.object;
-    const tripId = pi.metadata?.tripId;
-    if (tripId) {
-      const trip = await Trip.findById(tripId);
-      if (trip && !trip.paid) {
-        await markTripPaid(trip, {
-          provider: "stripe",
-          paymentIntentId: pi.id,
-          paymentMethodType: pi.payment_method_types?.[0] || "card",
-        });
-      }
+  if (isStripeMock()) {
+    if (!env.isDev) return res.json({ ok: true, ignored: true, reason: "mock mode" });
+    try {
+      event = JSON.parse(Buffer.isBuffer(req.body) ? req.body.toString("utf8") : String(req.body || ""));
+    } catch {
+      throw httpError(400, "Invalid JSON event");
+    }
+  } else {
+    if (!env.stripeWebhookSecret) {
+      throw httpError(503, "STRIPE_WEBHOOK_SECRET not configured");
+    }
+    const sig = req.headers["stripe-signature"];
+    try {
+      event = getStripe().webhooks.constructEvent(req.body, sig, env.stripeWebhookSecret);
+    } catch (err) {
+      throw httpError(400, `Webhook signature verification failed: ${err.message}`);
     }
   }
 
-  if (event.type === "payment_intent.payment_failed") {
-    const pi = event.data.object;
-    const tripId = pi.metadata?.tripId;
-    if (tripId) {
-      await Trip.findByIdAndUpdate(tripId, { paymentStatus: "failed" });
-      await Payment.findOneAndUpdate(
-        { stripePaymentIntentId: pi.id },
-        { status: "failed" },
-      );
-    }
-  }
-
-  res.json({ ok: true, received: true, type: event.type });
+  const result = await handleStripeEvent(event);
+  res.json({ ok: true, received: true, ...result });
 });
-
-// silence unused lint for CARD_LIKE if needed
-void CARD_LIKE;

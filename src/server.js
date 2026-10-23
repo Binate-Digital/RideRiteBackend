@@ -4,6 +4,7 @@ import { connectDb } from "./config/db.js";
 import { env } from "./config/env.js";
 import { initRealtime } from "./realtime/index.js";
 import { startDispatchSweeper } from "./utils/dispatch.js";
+import { startPaymentSweeper } from "./utils/paymentSweeper.js";
 
 async function main() {
   await connectDb();
@@ -13,6 +14,8 @@ async function main() {
   initRealtime(server);
   // Advances ride offers whose timer was lost (restart / crash)
   startDispatchSweeper();
+  // Releases unpaid booking holds and retries pending refunds
+  startPaymentSweeper();
   server.listen(env.port, () => {
     console.log(`[server] ${env.appName} API listening on http://localhost:${env.port}`);
     console.log(`[server] health → http://localhost:${env.port}/health`);
