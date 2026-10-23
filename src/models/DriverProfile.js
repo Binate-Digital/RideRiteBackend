@@ -107,6 +107,8 @@ const driverProfileSchema = new mongoose.Schema(
       default: "incomplete",
     },
     verificationSubmittedAt: { type: Date, default: null },
+    /** Last admin account decision: { status: approved|rejected|pending, reason, at, by } (TRD 6.3) */
+    reviewDecision: { type: Object, default: null },
     verificationSkippedAt: { type: Date, default: null },
 
     // Admin must approve after reviewing license / docs
@@ -168,6 +170,9 @@ driverProfileSchema.methods.toSafeJSON = function toSafeJSON() {
     lastVehicleChangeReview: this.lastVehicleChangeReview,
     verificationStatus: this.verificationStatus,
     verificationSubmittedAt: this.verificationSubmittedAt,
+    reviewDecision: this.reviewDecision
+      ? { status: this.reviewDecision.status, reason: this.reviewDecision.reason || "", at: this.reviewDecision.at }
+      : null,
     verificationSkippedAt: this.verificationSkippedAt,
     isApproved: this.isApproved,
     stripeConnectAccountId: this.stripeConnectAccountId,

@@ -35,5 +35,7 @@ router.post("/:id/accept", requireAuth, requireVerified, requireRole("driver", "
 router.post("/:id/reject", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.reject);
 router.patch("/:id/status", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.updateStatus);
 router.post("/:id/rate", requireAuth, requireVerified, writeLimiter, rides.rate);
+router.get("/:id/disputes", requireAuth, requireVerified, rides.listTripDisputes);
+router.post("/:id/disputes", requireAuth, requireVerified, writeLimiter, rides.reportProblem);
 
 export default router;

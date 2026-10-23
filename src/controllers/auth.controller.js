@@ -36,6 +36,12 @@ import {
   verificationEmail,
   resetPasswordEmail,
 } from "../utils/mailer.js";
+import { audit } from "../utils/audit.js";
+
+/** Audit actor for sign-in events (req.user isn't set yet). */
+function adminActor(req, user) {
+  return { user, ip: req.ip, get: (h) => req.get(h) };
+}
 
 function clientMeta(req) {
   return {
@@ -130,7 +136,12 @@ export const login = asyncHandler(async (req, res) => {
   if (!user.isActive) throw httpError(403, "Account is suspended");
 
   const valid = await user.comparePassword(data.password);
-  if (!valid) throw httpError(401, invalidMsg);
+  if (!valid) {
+    if (user.role === "admin") {
+      await audit(adminActor(req, user), "admin.login_failed", "User", user._id);
+    }
+    throw httpError(401, invalidMsg);
+  }
 
   // A phone account is verified by its SMS code; email accounts by the email code
   if (!user.isVerified()) {
@@ -143,6 +154,7 @@ export const login = asyncHandler(async (req, res) => {
   }
 
   const tokens = await issueSession(user, req);
+  if (user.role === "admin") await audit(adminActor(req, user), "admin.login", "User", user._id);
 
   res.json({
     ok: true,
@@ -318,6 +330,9 @@ export const logout = asyncHandler(async (req, res) => {
       user.refreshTokens = [];
     }
     await user.save();
+    if (user.role === "admin") {
+      await audit(req, req.body?.reason === "idle" ? "admin.logout_idle" : "admin.logout", "User", user._id);
+    }
     return res.json({ ok: true, message: "Logged out" });
   }
 

@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { watchForAdmins } from "../utils/adminEvents.js";
 import { tripEarningBreakdown } from "../utils/earnings.js";
 
 export const TRIP_STATUSES = [
@@ -137,6 +138,9 @@ tripSchema.index({ status: 1, offerExpiresAt: 1 });
 tripSchema.index({ driverId: 1, completedAt: 1 });
 // Driver cards: rating average over completed trips
 tripSchema.index({ driverId: 1, status: 1, riderRating: 1 });
+
+// Live admin dashboard counters (realtime/index.js)
+watchForAdmins(tripSchema, "trip");
 
 tripSchema.methods.toSafeJSON = function toSafeJSON() {
   return {

@@ -7,9 +7,13 @@ import { startDispatchSweeper } from "./utils/dispatch.js";
 import { startPaymentSweeper } from "./utils/paymentSweeper.js";
 import { startReminderSweeper } from "./utils/reminders.js";
 import { startDriverSweeper } from "./utils/driverSweeper.js";
+import { loadSettings, startSettingsRefresh } from "./utils/settings.js";
 
 async function main() {
   await connectDb();
+  // Admin-edited fares, fees and commissions (defaults to env when none are saved)
+  await loadSettings();
+  startSettingsRefresh();
   const app = createApp();
   // One HTTP server for both the REST API and Socket.IO (same port, /socket.io path)
   const server = http.createServer(app);

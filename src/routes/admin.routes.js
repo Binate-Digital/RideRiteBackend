@@ -1,50 +1,84 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAdmin, requireAuth, requirePermission as can } from "../middleware/auth.js";
 import * as admin from "../controllers/admin.controller.js";
+import * as ops from "../controllers/adminOps.controller.js";
+import * as finance from "../controllers/adminFinance.controller.js";
+import * as system from "../controllers/adminSystem.controller.js";
 
+/**
+ * Admin API (TRD 6). Every route needs an admin account plus the permission(s) listed —
+ * see utils/permissions.js for which admin role has which permission.
+ */
 const router = Router();
 
-router.use(requireAuth, requireRole("admin"));
+router.use(requireAuth, requireAdmin);
 
-router.get("/analytics", admin.analytics);
-router.get("/revenue", admin.revenue);
-router.get("/health", admin.health);
-router.get("/audit", admin.listAudit);
+router.get("/me", system.me);
+router.get("/analytics", can("dashboard:read"), system.analytics);
+router.get("/health", can("health:read"), system.health);
+router.get("/audit", can("audit:read"), system.listAudit);
+router.get("/settings", can("settings:read"), system.getSettingsHandler);
+router.patch("/settings", can("settings:write"), system.patchSettings);
 
-router.get("/users", admin.listUsers);
-router.patch("/users/:id/role", admin.setUserRole);
-router.patch("/users/:id/active", admin.setUserActive);
-router.get("/export/users.csv", admin.exportUsersCsv);
+router.get("/admins", can("admins:manage"), system.listAdmins);
+router.post("/admins", can("admins:manage"), system.createAdmin);
+router.patch("/admins/:id", can("admins:manage"), system.updateAdmin);
 
-router.get("/drivers", admin.listDrivers);
-router.patch("/drivers/:userId/status", admin.setDriverStatus);
-router.patch("/drivers/:userId/documents/:doc", admin.reviewDriverDocument);
-router.patch("/drivers/:userId/vehicle-change", admin.reviewDriverVehicleChange);
-router.get("/export/drivers.csv", admin.exportDriversCsv);
+// Users & drivers (6.3)
+router.get("/users", can("users:read"), admin.listUsers);
+router.get("/users/:id", can("users:read"), admin.getUser);
+router.patch("/users/:id/role", can("users:manage"), admin.setUserRole);
+router.patch("/users/:id/status", can("users:manage"), admin.setUserStatus);
+router.patch("/users/:id/active", can("users:manage"), admin.setUserActive);
+router.get("/users/:id/gdpr-export", can("users:gdpr"), admin.gdprExport);
+router.delete("/users/:id", can("users:gdpr"), admin.gdprDelete);
+router.get("/export/users.:format", can("users:export"), admin.exportUsers);
 
-router.get("/trips", admin.listTrips);
-router.patch("/trips/:id/refund", admin.refundTrip);
-router.get("/cancellations", admin.listCancellations);
+router.get("/drivers", can("drivers:read"), admin.listDrivers);
+router.get("/drivers/:userId", can("drivers:read"), admin.getDriver);
+router.patch("/drivers/:userId/status", can("drivers:approve"), admin.setDriverStatus);
+router.patch("/drivers/:userId/documents/:doc", can("drivers:approve"), admin.reviewDriverDocument);
+router.patch("/drivers/:userId/vehicle-change", can("drivers:approve"), admin.reviewDriverVehicleChange);
+router.get("/export/drivers.:format", can("users:export"), admin.exportDrivers);
 
-router.post("/payouts/run", admin.runDriverPayouts);
-router.get("/payouts", admin.listPayouts);
+// Trips & disputes (6.4)
+router.get("/trips", can("trips:read"), ops.listTrips);
+router.get("/trips/:id", can("trips:read"), ops.getTrip);
+router.get("/trips/:id/chat", can("trips:chat"), ops.getTripChat);
+router.patch("/trips/:id/refund", can("trips:refund"), ops.refundTrip);
+router.get("/disputes", can("disputes:manage"), ops.listDisputes);
+router.patch("/disputes/:id", can("disputes:manage"), ops.updateDispute);
 
-router.get("/subscriptions", admin.listSubscriptions);
+// Rentals & chauffeur (6.5)
+router.get("/rentals/listings", can("rentals:read"), ops.listRentalListings);
+router.patch("/rentals/listings/:id", can("rentals:manage"), ops.updateRentalListing);
+router.post("/rentals/fleet", can("rentals:manage"), ops.createFleetListing);
+router.patch("/rentals/fleet/:id", can("rentals:manage"), ops.updateFleetListing);
+router.delete("/rentals/fleet/:id", can("rentals:manage"), ops.deleteFleetListing);
+router.get("/rentals/bookings", can("rentals:read"), ops.listRentalBookings);
+router.get("/chauffeur", can("chauffeur:read"), ops.listChauffeur);
 
-router.get("/rentals/listings", admin.listRentalListings);
-router.patch("/rentals/listings/:id", admin.updateRentalListing);
-router.get("/rentals/bookings", admin.listRentalBookings);
+// Finance (6.6) and cancellations / refunds (6.8)
+router.get("/revenue", can("finance:read"), finance.revenue);
+router.get("/payouts", can("finance:read"), finance.listPayouts);
+router.get("/payouts/balances", can("finance:read"), finance.payoutBalances);
+router.post("/payouts/run", can("finance:payouts"), finance.runDriverPayouts);
+router.get("/payments", can("finance:read"), finance.listPayments);
+router.get("/refunds", can("finance:read"), finance.listRefunds);
+router.post("/refunds", can("finance:refunds"), finance.manualRefund);
+router.post("/refunds/retry", can("finance:refunds"), finance.retryRefund);
+router.get("/subscriptions", can("finance:read"), finance.listSubscriptions);
+router.get("/subscriptions/transactions", can("finance:read"), finance.listSubscriptionTransactions);
+router.get("/cancellations", can("trips:read"), ops.listCancellations);
 
-router.get("/chauffeur", admin.listChauffeur);
+// Driver programs (6.7)
+router.get("/bonuses", can("bonuses:manage"), ops.listBonuses);
+router.patch("/bonuses/:id", can("bonuses:manage"), ops.updateBonus);
+router.get("/maintenance", can("maintenance:manage"), ops.listMaintenance);
+router.patch("/maintenance/:id", can("maintenance:manage"), ops.updateMaintenance);
 
-router.get("/bonuses", admin.listBonuses);
-router.patch("/bonuses/:id", admin.updateBonus);
-
-router.get("/maintenance", admin.listMaintenance);
-router.patch("/maintenance/:id", admin.updateMaintenance);
-
-router.get("/promos", admin.listPromos);
-router.post("/promos", admin.createPromo);
-router.patch("/promos/:id", admin.updatePromo);
+router.get("/promos", can("promos:manage"), ops.listPromos);
+router.post("/promos", can("promos:manage"), ops.createPromo);
+router.patch("/promos/:id", can("promos:manage"), ops.updatePromo);
 
 export default router;

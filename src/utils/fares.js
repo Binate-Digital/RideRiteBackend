@@ -1,4 +1,9 @@
-/** Mirror of frontend DEFAULT_PRICING / computeFare for consistent estimates. */
+import { currentPricing, getSettings } from "./settings.js";
+
+/**
+ * Mirror of frontend DEFAULT_PRICING / computeFare for consistent estimates. Live prices come
+ * from admin settings (utils/settings.js), which default to DEFAULT_PRICING.
+ */
 
 export const DEFAULT_PRICING = {
   rates: {
@@ -28,7 +33,7 @@ export function computeFare(
   vehicle,
   distanceMiles,
   durationMinutes,
-  pricing = DEFAULT_PRICING,
+  pricing = currentPricing(),
   discountCents = 0,
 ) {
   const r = pricing.rates[vehicle];
@@ -82,14 +87,15 @@ export function buildEstimate({
     ({ distanceMiles, durationMinutes } = estimateDistanceDuration(pickup, destination));
   }
 
-  let fare = computeFare(vehicle, distanceMiles, durationMinutes);
+  const pricing = currentPricing();
+  let fare = computeFare(vehicle, distanceMiles, durationMinutes, pricing);
   if (discountFor) {
     const subtotal = fare.baseFareCents + fare.serviceFeeCents + fare.taxCents;
     fare = computeFare(
       vehicle,
       distanceMiles,
       durationMinutes,
-      DEFAULT_PRICING,
+      pricing,
       discountFor(subtotal),
     );
   }
@@ -114,5 +120,15 @@ function haversineMiles(a, b) {
   return Number((2 * R * Math.asin(Math.sqrt(h))).toFixed(1));
 }
 
-export const CANCEL_GRACE_SECONDS = 120;
-export const CANCEL_FEE_CENTS_AFTER_MATCH = 500;
+/**
+ * Rider cancel fee (TRD 4.7, admin "cancellation fee rules"): charged once the driver is en
+ * route (or has arrived), unless the rider cancels within `graceSeconds` of the driver setting
+ * off. Capped at the fare.
+ */
+export function riderCancellationFee(trip, now = new Date()) {
+  if (!["en_route", "arrived"].includes(trip.status)) return 0;
+  const { feeCents, graceSeconds } = getSettings().cancellation;
+  const since = trip.enRouteAt || trip.acceptedAt;
+  if (graceSeconds > 0 && since && now.getTime() - new Date(since).getTime() < graceSeconds * 1000) return 0;
+  return Math.max(0, Math.min(feeCents, trip.fareCents || 0));
+}

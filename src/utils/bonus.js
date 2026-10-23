@@ -2,9 +2,9 @@ import mongoose from "mongoose";
 import { DriverBonus } from "../models/DriverBonus.js";
 import { DriverEarning } from "../models/DriverEarning.js";
 import { Trip } from "../models/Trip.js";
-import { env } from "../config/env.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { recordBonusEarning } from "./earnings.js";
+import { getSettings } from "./settings.js";
 
 /**
  * Monthly driver bonus (TRD 5.5), computed from the driver's real trips in a UTC month.
@@ -48,12 +48,14 @@ export function monthLabel(key) {
 }
 
 export function bonusThresholds() {
+  // Admin settings (utils/settings.js), defaulting to the BONUS_* env
+  const b = getSettings().bonus;
   return {
-    minTrips: env.bonus.minTrips,
-    minOnTimeRate: env.bonus.minOnTimeRate,
-    minSafeScore: env.bonus.minSafeScore,
-    onTimeGraceMinutes: env.bonus.onTimeGraceMinutes,
-    amountCents: env.bonus.amountCents,
+    minTrips: b.minTrips,
+    minOnTimeRate: b.minOnTimeRate,
+    minSafeScore: b.minSafeScore,
+    onTimeGraceMinutes: b.onTimeGraceMinutes,
+    amountCents: b.amountCents,
   };
 }
 
@@ -76,7 +78,7 @@ export async function computeMonthMetrics(driverId, key) {
       .lean(),
     Trip.countDocuments({ driverId: id, status: "cancelled", cancelledBy: "driver", cancelledAt: { $gte: start, $lt: end } }),
   ]);
-  const grace = env.bonus.onTimeGraceMinutes;
+  const grace = getSettings().bonus.onTimeGraceMinutes;
   let measuredTrips = 0;
   let onTimeTrips = 0;
   let ratingSum = 0;
@@ -130,7 +132,7 @@ export async function refreshMonth(driverId, key = monthKeyOf()) {
       $set: {
         ...metrics,
         thresholds: bonusThresholds(),
-        giftCardCents: env.bonus.amountCents,
+        giftCardCents: getSettings().bonus.amountCents,
         status: "in_progress",
         computedAt: new Date(),
       },
@@ -162,7 +164,7 @@ export async function freezeMonth(driverId, key) {
       $set: {
         ...metrics,
         thresholds: bonusThresholds(),
-        giftCardCents: env.bonus.amountCents,
+        giftCardCents: getSettings().bonus.amountCents,
         status,
         computedAt: new Date(),
         frozenAt: new Date(),
@@ -178,7 +180,7 @@ export async function freezeMonth(driverId, key) {
     await notify(driverId, {
       category: "bonus",
       title: `You qualified for the ${monthLabel(key)} bonus`,
-      body: `${metrics.tripsCompleted} trips, ${Math.round(metrics.onTimeRate * 100)}% on time, safe-driving score ${metrics.safeDrivingScore}. Your $${(env.bonus.amountCents / 100).toFixed(0)} bonus is waiting for admin approval.`,
+      body: `${metrics.tripsCompleted} trips, ${Math.round(metrics.onTimeRate * 100)}% on time, safe-driving score ${metrics.safeDrivingScore}. Your $${(getSettings().bonus.amountCents / 100).toFixed(0)} bonus is waiting for admin approval.`,
       data: { href: "/driver", monthKey: key, bonusId: row._id.toString() },
       email: true,
     });

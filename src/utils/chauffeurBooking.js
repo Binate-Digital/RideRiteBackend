@@ -7,6 +7,7 @@ import { cancelOpenIntent, recordIntentSucceeded } from "./checkout.js";
 import { chauffeurReceiptEmail } from "./mailer.js";
 import { money } from "./bookingRefunds.js";
 import { emitToDrivers } from "../realtime/index.js";
+import { getSettings } from "./settings.js";
 
 /**
  * Private driver service tiers (TRD 4.9). The backend is the single source of pricing: each
@@ -23,7 +24,7 @@ export const CHAUFFEUR_MAX_HOURS = 24;
 export function chauffeurOptions() {
   return CHAUFFEUR_TIERS.map((t) => ({
     ...t,
-    hourlyRateCents: env.chauffeurHourlyCents[t.vehicleType],
+    hourlyRateCents: getSettings().chauffeurHourlyCents[t.vehicleType],
     maxHours: CHAUFFEUR_MAX_HOURS,
   }));
 }
@@ -39,7 +40,7 @@ export function quoteChauffeur({ tier, vehicleType, durationHours }) {
   if (!Number.isInteger(hours) || hours < opt.minHours || hours > CHAUFFEUR_MAX_HOURS) {
     throw httpError(400, `${opt.label} bookings are ${opt.minHours}–${CHAUFFEUR_MAX_HOURS} whole hours`);
   }
-  const hourlyRateCents = env.chauffeurHourlyCents[opt.vehicleType];
+  const hourlyRateCents = getSettings().chauffeurHourlyCents[opt.vehicleType];
   return {
     tier: opt.id,
     tierLabel: opt.label,

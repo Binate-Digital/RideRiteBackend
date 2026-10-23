@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
+import { ADMIN_ROLES, effectiveAdminRole, permissionsFor } from "../utils/permissions.js";
 
 const refreshTokenSchema = new mongoose.Schema(
   {
@@ -38,6 +39,8 @@ const userSchema = new mongoose.Schema(
       default: "rider",
       index: true,
     },
+    /** Admin RBAC role (TRD 6.1) — only for role "admin"; unset on a legacy admin = super_admin */
+    adminRole: { type: String, enum: [...ADMIN_ROLES, null], default: null },
     isEmailVerified: { type: Boolean, default: false },
     emailVerifyTokenHash: { type: String, default: null, select: false },
     emailVerifyExpiresAt: { type: Date, default: null, select: false },
@@ -45,6 +48,24 @@ const userSchema = new mongoose.Schema(
     passwordResetExpiresAt: { type: Date, default: null, select: false },
     refreshTokens: { type: [refreshTokenSchema], default: [], select: false },
     isActive: { type: Boolean, default: true },
+    /**
+     * Why an account is inactive (admin action, TRD 6.3): suspended (temporary, safety /
+     * compliance), deactivated (closed) or deleted (GDPR anonymized). Cleared on reactivation.
+     */
+    suspension: {
+      type: new mongoose.Schema(
+        {
+          status: { type: String, enum: ["suspended", "deactivated", "deleted"] },
+          reason: { type: String, default: "" },
+          at: { type: Date, default: Date.now },
+          by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+    /** GDPR erasure: personal data was removed; financial records keep only the id */
+    anonymizedAt: { type: Date, default: null },
     lastLoginAt: { type: Date, default: null },
     stripeCustomerId: { type: String, default: null, index: true },
     defaultPaymentMethodId: { type: String, default: null },
@@ -100,6 +121,9 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     role: this.role,
     isEmailVerified: this.isEmailVerified,
     isActive: this.isActive,
+    ...(this.role === "admin"
+      ? { adminRole: effectiveAdminRole(this), permissions: permissionsFor(this) }
+      : {}),
     lastLoginAt: this.lastLoginAt,
     stripeCustomerId: this.stripeCustomerId,
     defaultPaymentMethodId: this.defaultPaymentMethodId,

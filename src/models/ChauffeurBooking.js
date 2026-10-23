@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { watchForAdmins } from "../utils/adminEvents.js";
 
 const chauffeurBookingSchema = new mongoose.Schema(
   {
@@ -59,6 +60,9 @@ const chauffeurBookingSchema = new mongoose.Schema(
 
 // Driver hub: open bookings of a vehicle type, soonest first
 chauffeurBookingSchema.index({ status: 1, vehicleType: 1, startAt: 1 });
+
+// Live admin dashboard counters (realtime/index.js)
+watchForAdmins(chauffeurBookingSchema, "chauffeur");
 
 chauffeurBookingSchema.methods.toSafeJSON = function toSafeJSON() {
   return {

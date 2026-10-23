@@ -21,11 +21,14 @@ import publicRoutes from "./routes/public.routes.js";
 import telephonyRoutes from "./routes/telephony.routes.js";
 import { stripeWebhook } from "./controllers/payments.controller.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
+import { requestMetrics } from "./middleware/metrics.js";
 
 export function createApp() {
   const app = express();
 
   app.set("trust proxy", 1);
+  // Latency / error-rate / throughput window for the admin health page
+  app.use(requestMetrics);
   app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
   app.use(

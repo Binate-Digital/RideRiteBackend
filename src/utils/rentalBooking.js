@@ -10,6 +10,7 @@ import { refundPayment } from "./refunds.js";
 import { Payment } from "../models/Payment.js";
 import { rentalReceiptEmail } from "./mailer.js";
 import { cancellationRefund, money, settleBookingRefund } from "./bookingRefunds.js";
+import { getSettings } from "./settings.js";
 
 const DAY_MS = 86400000;
 
@@ -58,7 +59,7 @@ export function quoteRental(listing, startRaw, endRaw) {
   }
   const subtotalCents = days * listing.dailyRateCents;
   const commissionCents =
-    listing.source === "peer" ? Math.round(subtotalCents * env.rentalCommissionRate) : 0;
+    listing.source === "peer" ? Math.round(subtotalCents * getSettings().commission.rentalRate) : 0;
   return {
     startDate,
     endDate,

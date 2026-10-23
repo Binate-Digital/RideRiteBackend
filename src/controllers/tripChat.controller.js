@@ -5,6 +5,9 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { env } from "../config/env.js";
 import { telephonyConfigured } from "../utils/telephony.js";
+import { Dispute } from "../models/Dispute.js";
+import { hasPermission } from "../utils/permissions.js";
+import { audit } from "../utils/audit.js";
 
 const ACTIVE = ["accepted", "en_route", "arrived", "in_progress"];
 const ENDED = ["completed", "cancelled", "no_drivers"];
@@ -20,12 +23,17 @@ async function assertTripParty(req) {
   const trip = await Trip.findById(req.params.id);
   if (!trip) throw httpError(404, "Trip not found");
   const uid = req.user._id.toString();
-  const isParty =
-    trip.riderId.toString() === uid ||
-    (trip.driverId && trip.driverId.toString() === uid) ||
-    req.user.role === "admin";
-  if (!isParty) throw httpError(403, "Not authorized");
-  return trip;
+  const isParty = trip.riderId.toString() === uid || (trip.driverId && trip.driverId.toString() === uid);
+  if (isParty) return trip;
+  // Admins read a transcript only to handle a dispute on the trip (TRD 6.4), audited
+  if (req.user.role === "admin" && hasPermission(req.user, "trips:chat")) {
+    if (!(await Dispute.exists({ tripId: trip._id }))) {
+      throw httpError(403, "Chat transcripts are only available for trips with a reported problem", { code: "NO_DISPUTE" });
+    }
+    if (req.method === "GET") await audit(req, "trip.chat.view", "Trip", trip._id.toString());
+    return trip;
+  }
+  throw httpError(403, "Not authorized");
 }
 
 /** GET /api/rides/:id/messages */

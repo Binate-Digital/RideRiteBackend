@@ -5,7 +5,8 @@
 // function so pasting it again doesn't hit "already declared" errors.
 //
 // Same accounts as seed-test-accounts.js, for when you can't run Node on the server:
-// 1 rider + 4 drivers that are ride-ready — email verified, KYC approved,
+// 1 rider, 4 drivers and a super admin for the admin panel (admin@riderite.test).
+// The drivers are ride-ready — email verified, KYC approved,
 // vehicle + plate set, active monthly subscription and Stripe Connect marked
 // ready (fake "acct_seedtest_*" ids the backend never sends to Stripe).
 // License images are left empty; upload them from the driver's profile page.
@@ -29,6 +30,7 @@ const PASSWORD_HASH = "$2b$12$DM8YZZlohcpX8PDfFrw.t.NWwGMrFmMrwzDNZ12e9gvCF1.2yU
 const BASE = { lat: 28.5383, lng: -81.3792 };
 
 const RIDER = { email: "rider1@riderite.test", fullName: "Test Rider", phone: "4075550100" };
+const ADMIN = { email: "admin@riderite.test", fullName: "Test Admin", phone: "4075550199" };
 
 const DRIVERS = [
   { email: "driver.sedan1@riderite.test", fullName: "Sam Sedan", phone: "4075550101",
@@ -87,6 +89,9 @@ function upsertUser(u, role) {
 
 upsertUser(RIDER, "rider");
 print(`rider   ${RIDER.email}`);
+const adminId = upsertUser(ADMIN, "admin");
+db.users.updateOne({ _id: adminId }, { $set: { adminRole: "super_admin", suspension: null } });
+print(`admin   ${ADMIN.email} (super_admin)`);
 
 for (const d of DRIVERS) {
   const userId = upsertUser(d, "driver");

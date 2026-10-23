@@ -3,6 +3,7 @@ import { corsOrigin } from "../config/cors.js";
 import { verifyAccessToken } from "../utils/tokens.js";
 import { User } from "../models/User.js";
 import { Trip } from "../models/Trip.js";
+import { adminBus } from "../utils/adminEvents.js";
 
 /**
  * Socket.IO layer: pushes live updates instead of clients polling.
@@ -11,6 +12,7 @@ import { Trip } from "../models/Trip.js";
  *   user:<userId>   every socket of that user (notifications, their trips)
  *   drivers         all connected drivers (a request was taken / closed)
  *   trip:<tripId>   rider + driver of a trip (driver location, status, chat)
+ *   admins          every connected admin (live dashboard counters)
  *
  * Client → server
  *   trip:join  (tripId, ack)   join a trip room; only that trip's rider/driver/admin
@@ -29,6 +31,9 @@ import { Trip } from "../models/Trip.js";
  *                                                    private-driver booking was paid
  *   chauffeur:closed  { bookingId }                  (drivers) taken or cancelled
  *   chauffeur:update  { booking }                    rider / assigned driver: status change
+ *   admin:counters    { activeTrips, … }             (admins) live dashboard counters, at most
+ *                                                    once per ADMIN_COUNTERS_THROTTLE_MS
+ *   admin:activity    { kind, id, status }           (admins) a trip / rental / chauffeur changed
  */
 
 let io = null;
@@ -63,6 +68,10 @@ export function initRealtime(httpServer) {
     const { userId, role } = socket.data;
     socket.join(`user:${userId}`);
     if (role === "driver") socket.join("drivers");
+    if (role === "admin") {
+      socket.join("admins");
+      void liveCounters().then((c) => socket.emit("admin:counters", c)).catch(() => {});
+    }
 
     socket.on("trip:join", async (tripId, ack) => {
       const reply = typeof ack === "function" ? ack : () => {};
@@ -86,8 +95,59 @@ export function initRealtime(httpServer) {
     });
   });
 
+  adminBus.on("change", (kind, info) => {
+    if (!io || !io.sockets.adapter.rooms.get("admins")?.size) return;
+    io.to("admins").emit("admin:activity", { kind, ...(info || {}) });
+    scheduleAdminCounters();
+  });
+
   console.log("[realtime] Socket.IO ready");
   return io;
+}
+
+const ACTIVE_TRIP_STATUSES = ["requested", "accepted", "en_route", "arrived", "in_progress"];
+const COUNTERS_THROTTLE_MS = Math.max(200, Number(process.env.ADMIN_COUNTERS_THROTTLE_MS) || 1000);
+let countersTimer = null;
+
+/** Live numbers for the admin dashboard (also served by GET /api/admin/analytics). */
+export async function liveCounters() {
+  const { RentalBooking } = await import("../models/RentalBooking.js");
+  const { ChauffeurBooking } = await import("../models/ChauffeurBooking.js");
+  const { DriverProfile } = await import("../models/DriverProfile.js");
+  const now = new Date();
+  const [activeTrips, searching, activeRentals, activeChauffeur, onlineDrivers] = await Promise.all([
+    Trip.countDocuments({ status: { $in: ACTIVE_TRIP_STATUSES } }),
+    Trip.countDocuments({ status: "requested" }),
+    RentalBooking.countDocuments({ status: { $in: ["confirmed", "active"] }, endDate: { $gt: now } }),
+    ChauffeurBooking.countDocuments({ status: { $in: ["requested", "confirmed", "driver_assigned", "in_progress"] } }),
+    DriverProfile.countDocuments({ isOnline: true }),
+  ]);
+  return { activeTrips, searching, activeRentals, activeChauffeur, onlineDrivers, at: now };
+}
+
+function scheduleAdminCounters() {
+  if (countersTimer) return;
+  countersTimer = setTimeout(async () => {
+    countersTimer = null;
+    try {
+      if (io) io.to("admins").emit("admin:counters", await liveCounters());
+    } catch {
+      /* next change retries */
+    }
+  }, COUNTERS_THROTTLE_MS);
+  countersTimer.unref?.();
+}
+
+/** Socket.IO numbers for the admin health page. */
+export function realtimeStats() {
+  if (!io) return { enabled: false, connections: 0, admins: 0, drivers: 0 };
+  const rooms = io.sockets.adapter.rooms;
+  return {
+    enabled: true,
+    connections: io.of("/").sockets.size,
+    admins: rooms.get("admins")?.size || 0,
+    drivers: rooms.get("drivers")?.size || 0,
+  };
 }
 
 function emit(room, event, payload) {

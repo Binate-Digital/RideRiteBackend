@@ -2,11 +2,7 @@ import { Trip } from "../models/Trip.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
-import {
-  buildEstimate,
-  CANCEL_FEE_CENTS_AFTER_MATCH,
-  CANCEL_GRACE_SECONDS,
-} from "../utils/fares.js";
+import { buildEstimate, riderCancellationFee } from "../utils/fares.js";
 import {
   estimateSchema,
   bookRideSchema,
@@ -33,6 +29,8 @@ import { settleTripRefund } from "../utils/refunds.js";
 import { recordCancellationFeeEarning, recordTripEarning } from "../utils/earnings.js";
 import { rideReceiptEmail } from "../utils/mailer.js";
 import { User } from "../models/User.js";
+import { Dispute, DISPUTE_CATEGORIES } from "../models/Dispute.js";
+import { z } from "zod";
 import { etaMinutesForMiles, haversineMiles } from "../utils/nearbyDrivers.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
@@ -238,12 +236,14 @@ export const cancel = asyncHandler(async (req, res) => {
   if (trip.status === "pending_payment" || !chargedOnline) {
     cancelStatus = "no_charge";
     message = "Ride canceled. No payment was taken.";
-  } else if (!driverEnRoute) {
+  } else if (!driverEnRoute || riderCancellationFee(trip) <= 0) {
     refundCents = trip.fareCents;
     cancelStatus = "refunded_full";
-    message = "Canceled before driver was en route. Full refund issued.";
+    message = driverEnRoute
+      ? "Canceled within the free cancellation window. Full refund issued."
+      : "Canceled before driver was en route. Full refund issued.";
   } else {
-    feeCents = Math.min(CANCEL_FEE_CENTS_AFTER_MATCH, trip.fareCents);
+    feeCents = riderCancellationFee(trip);
     refundCents = Math.max(0, trip.fareCents - feeCents);
     cancelStatus = refundCents > 0 ? "refunded_partial" : "no_refund";
     message = `Driver was already en route. $${(feeCents / 100).toFixed(2)} cancellation fee applied.`;
@@ -631,4 +631,59 @@ export const rate = asyncHandler(async (req, res) => {
   broadcastTrip(trip);
 
   res.json({ ok: true, trip: trip.toSafeJSON() });
+});
+
+/** What a rider sees of their own report (no internal notes). */
+function disputeForRider(d) {
+  const j = d.toSafeJSON();
+  return {
+    id: j.id,
+    tripId: j.tripId,
+    category: j.category,
+    description: j.description,
+    status: j.status,
+    resolutionNotes: j.status === "resolved" ? j.resolutionNotes : "",
+    refundCents: j.refundCents,
+    resolvedAt: j.resolvedAt,
+    createdAt: j.createdAt,
+  };
+}
+
+/**
+ * POST /api/rides/:id/disputes — rider "Report a problem" on a completed / cancelled trip.
+ * body: { category, description }. One open report per trip.
+ */
+export const reportProblem = asyncHandler(async (req, res) => {
+  const data = z
+    .object({
+      category: z.enum(DISPUTE_CATEGORIES),
+      description: z.string().trim().min(10, "Tell us a bit more (at least 10 characters)").max(2000),
+    })
+    .parse(req.body || {});
+  const trip = await Trip.findById(req.params.id);
+  if (!trip) throw httpError(404, "Trip not found");
+  if (trip.riderId.toString() !== req.user._id.toString()) throw httpError(403, "Only the rider can report a problem with this trip");
+  if (!["completed", "cancelled"].includes(trip.status)) {
+    throw httpError(400, "You can report a problem once the trip is completed or cancelled");
+  }
+  if (await Dispute.exists({ tripId: trip._id, status: { $ne: "resolved" } })) {
+    throw httpError(409, "You already reported a problem with this trip — we're on it", { code: "DISPUTE_OPEN" });
+  }
+  const dispute = await Dispute.create({
+    tripId: trip._id,
+    riderId: trip.riderId,
+    driverId: trip.driverId || null,
+    category: data.category,
+    description: data.description,
+  });
+  res.status(201).json({ ok: true, dispute: disputeForRider(dispute) });
+});
+
+/** GET /api/rides/:id/disputes — the rider's reports for this trip */
+export const listTripDisputes = asyncHandler(async (req, res) => {
+  const trip = await Trip.findById(req.params.id).select("riderId");
+  if (!trip) throw httpError(404, "Trip not found");
+  if (trip.riderId.toString() !== req.user._id.toString()) throw httpError(403, "Not your trip");
+  const rows = await Dispute.find({ tripId: trip._id, riderId: req.user._id }).sort({ createdAt: -1 });
+  res.json({ ok: true, disputes: rows.map(disputeForRider) });
 });

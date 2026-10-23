@@ -8,6 +8,7 @@ import { driverCardsFor } from "./tripDrivers.js";
 import { recordChauffeurEarning } from "./earnings.js";
 import { cancellationRefund, money, settleBookingRefund } from "./bookingRefunds.js";
 import { emitToDrivers, emitToUser } from "../realtime/index.js";
+import { getSettings } from "./settings.js";
 
 /**
  * Private driver (chauffeur) assignment — TRD 4.9.
@@ -50,7 +51,7 @@ export async function chauffeurBookingsForDriver(bookings) {
   return bookings.map((b) => ({
     ...b.toSafeJSON(),
     riderFirstName: names.get(String(b.riderId)) || "Rider",
-    driverEarningCents: Math.round(b.totalCents * (1 - env.chauffeurCommissionRate)),
+    driverEarningCents: Math.round(b.totalCents * (1 - getSettings().commission.chauffeurRate)),
   }));
 }
 

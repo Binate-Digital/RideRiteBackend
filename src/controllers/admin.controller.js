@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+import { z } from "zod";
 import { User } from "../models/User.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { Trip } from "../models/Trip.js";
@@ -8,253 +10,390 @@ import { RentalBooking } from "../models/RentalBooking.js";
 import { ChauffeurBooking } from "../models/ChauffeurBooking.js";
 import { DriverBonus } from "../models/DriverBonus.js";
 import { MaintenanceRecord } from "../models/MaintenanceRecord.js";
-import { AuditLog } from "../models/AuditLog.js";
-import { PromoCode } from "../models/PromoCode.js";
-import { z } from "zod";
 import { DriverEarning } from "../models/DriverEarning.js";
 import { DriverPayout } from "../models/DriverPayout.js";
+import { AuditLog } from "../models/AuditLog.js";
+import { Dispute } from "../models/Dispute.js";
+import { Notification } from "../models/Notification.js";
+import { SavedAddress } from "../models/SavedAddress.js";
+import { PushSubscription } from "../models/PushSubscription.js";
+import { TripMessage } from "../models/TripMessage.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
-import { findTripPayment, refundPayment } from "../utils/refunds.js";
-import { runPayouts } from "../utils/payouts.js";
+import { audit } from "../utils/audit.js";
 import {
   markUploadedDocumentsApproved,
   reviewDocument,
   reviewVehicleChange,
 } from "../utils/driverCompliance.js";
 import { documentsPayload } from "../utils/driverDocuments.js";
-import { reviewBonus } from "../utils/bonus.js";
+import { sendExport } from "../utils/export.js";
+import { escapeRegex, paged, parsePaging, requireObjectId, userIdsMatching } from "../utils/adminQuery.js";
+import { notifyUser } from "./notifications.controller.js";
 
-async function audit(actorId, action, targetType, targetId, meta = {}) {
-  try {
-    await AuditLog.create({ actorId, action, targetType, targetId, meta });
-  } catch {
-    /* ignore */
-  }
-}
+/**
+ * Admin: users & drivers (TRD 6.3) — search, detail, suspend / deactivate / reactivate, role
+ * changes, driver approval with stored reasons, document and vehicle-change review, CSV / Excel
+ * exports and GDPR export / erasure (TRD 6.9). Every write is audited (utils/audit.js).
+ */
 
-const ACTIVE_TRIP_STATUSES = ["requested", "accepted", "en_route", "arrived", "in_progress"];
+const ACTIVE_TRIP_STATUSES = ["pending_payment", "requested", "accepted", "en_route", "arrived", "in_progress"];
 
-/** GET /api/admin/analytics */
-export const analytics = asyncHandler(async (_req, res) => {
-  const weekAgo = new Date(Date.now() - 7 * 86400000);
-
-  const [
-    totalTrips,
-    completed,
-    cancelled,
-    active,
-    trips7d,
-    grossAgg,
-    paidAgg,
-    approvedDrivers,
-    pendingDrivers,
-    totalUsers,
-    totalDrivers,
-  ] = await Promise.all([
-    Trip.countDocuments(),
-    Trip.countDocuments({ status: "completed" }),
-    Trip.countDocuments({ status: "cancelled" }),
-    Trip.countDocuments({ status: { $in: ACTIVE_TRIP_STATUSES } }),
-    Trip.countDocuments({ createdAt: { $gte: weekAgo } }),
-    Trip.aggregate([
-      { $match: { status: "completed" } },
-      { $group: { _id: null, total: { $sum: "$fareCents" } } },
-    ]),
-    Payment.aggregate([
-      { $match: { status: "succeeded", purpose: { $in: ["ride", "setup_card"] } } },
-      { $group: { _id: null, total: { $sum: "$amountCents" } } },
-    ]),
-    DriverProfile.countDocuments({
-      isApproved: true,
-      verificationStatus: "approved",
-    }),
-    DriverProfile.countDocuments({
-      verificationStatus: { $in: ["pending", "incomplete"] },
-      isApproved: { $ne: true },
-    }),
-    User.countDocuments({ role: { $ne: "admin" } }),
-    User.countDocuments({ role: "driver" }),
-  ]);
-
-  res.json({
-    ok: true,
-    totalTrips,
-    completed,
-    cancelled,
-    active,
-    trips7d,
-    grossCents: grossAgg[0]?.total ?? 0,
-    paidCents: paidAgg[0]?.total ?? 0,
-    driverCounts: {
-      approved: approvedDrivers,
-      pending: pendingDrivers,
-    },
-    totalUsers,
-    totalDrivers,
-  });
-});
-
-function parsePaging(req, defaultLimit = 20) {
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || defaultLimit));
-  const skip = (page - 1) * limit;
-  return { page, limit, skip };
-}
-
-function escapeRegex(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function driverStatusOf(p) {
-  if (p.verificationStatus === "approved" && p.isApproved) return "approved";
-  if (p.verificationStatus === "rejected") return "rejected";
-  return "pending";
-}
-
-/** GET /api/admin/users?q=&role=&page=&limit= */
-export const listUsers = asyncHandler(async (req, res) => {
-  const q = String(req.query.q || "").trim();
-  const role = String(req.query.role || "all").trim();
-  const { page, limit, skip } = parsePaging(req);
-
-  const filter = {
-    role: { $ne: "admin" },
+function userRow(u) {
+  return {
+    id: u._id.toString(),
+    fullName: u.fullName,
+    email: u.email ?? null,
+    phone: u.phone ?? null,
+    role: u.role,
+    isActive: u.isActive,
+    status: accountStatus(u),
+    suspension: u.suspension
+      ? { status: u.suspension.status, reason: u.suspension.reason || "", at: u.suspension.at }
+      : null,
+    isEmailVerified: Boolean(u.isEmailVerified),
+    isPhoneVerified: Boolean(u.isPhoneVerified),
+    profileCompleted: Boolean(u.profileCompleted),
+    createdAt: u.createdAt,
+    lastLoginAt: u.lastLoginAt ?? null,
   };
-  if (role === "rider" || role === "driver") {
-    filter.role = role;
-  }
+}
+
+/** active | suspended | deactivated | deleted | inactive (e.g. a rejected driver) */
+function accountStatus(u) {
+  if (u.isActive) return "active";
+  return u.suspension?.status || "inactive";
+}
+
+function userFilter(req) {
+  const q = String(req.query.q || "").trim();
+  const role = String(req.query.role || "all");
+  const status = String(req.query.status || "all");
+  const filter = { role: { $ne: "admin" } };
+  if (role === "rider" || role === "driver") filter.role = role;
+  if (status === "active") filter.isActive = true;
+  else if (["suspended", "deactivated", "deleted"].includes(status)) filter["suspension.status"] = status;
+  else if (status === "inactive") filter.isActive = false;
   if (q) {
     const rx = new RegExp(escapeRegex(q), "i");
     filter.$or = [{ email: rx }, { fullName: rx }, { phone: rx }];
+    if (/^[a-f0-9]{24}$/i.test(q)) filter.$or.push({ _id: q });
   }
+  return filter;
+}
 
+/** GET /api/admin/users?q=&role=&status=&page=&limit= */
+export const listUsers = asyncHandler(async (req, res) => {
+  const filter = userFilter(req);
+  const paging = parsePaging(req);
   const [total, users] = await Promise.all([
     User.countDocuments(filter),
-    User.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .select("fullName email phone role isActive isEmailVerified profileCompleted createdAt lastLoginAt"),
+    User.find(filter).sort({ createdAt: -1 }).skip(paging.skip).limit(paging.limit),
   ]);
+  res.json({ ...paged(paging, total, "users", users.map(userRow)) });
+});
 
+/** GET /api/admin/users/:id — profile, activity, payments, bookings, prefs, status, audit */
+export const getUser = asyncHandler(async (req, res) => {
+  const id = requireObjectId(req.params.id);
+  const user = await User.findById(id);
+  if (!user || user.role === "admin") throw httpError(404, "User not found");
+  const [profile, ridesAsRider, ridesAsDriver, payments, rentals, ownedListings, chauffeur, disputes, auditRows, subscription, ledger] =
+    await Promise.all([
+      DriverProfile.findOne({ userId: id }),
+      Trip.find({ riderId: id }).sort({ createdAt: -1 }).limit(25),
+      Trip.find({ driverId: id }).sort({ createdAt: -1 }).limit(25),
+      Payment.find({ userId: id }).sort({ createdAt: -1 }).limit(25),
+      RentalBooking.find({ $or: [{ renterId: id }, { ownerId: id }] }).sort({ createdAt: -1 }).limit(25),
+      RentalListing.find({ ownerId: id }).sort({ createdAt: -1 }).limit(25),
+      ChauffeurBooking.find({ $or: [{ riderId: id }, { driverId: id }] }).sort({ createdAt: -1 }).limit(25),
+      Dispute.find({ $or: [{ riderId: id }, { driverId: id }] }).sort({ createdAt: -1 }).limit(25),
+      AuditLog.find({ targetId: id.toString() }).sort({ createdAt: -1 }).limit(50),
+      DriverSubscription.findOne({ userId: id }),
+      DriverEarning.aggregate([{ $match: { driverId: id } }, { $group: { _id: "$status", total: { $sum: "$netCents" } } }]),
+    ]);
+  const [tripCount, tripsDriven] = await Promise.all([
+    Trip.countDocuments({ riderId: id }),
+    Trip.countDocuments({ driverId: id }),
+  ]);
+  const balance = Object.fromEntries(ledger.map((l) => [l._id, l.total]));
   res.json({
     ok: true,
-    page,
-    limit,
-    total,
-    totalPages: Math.max(1, Math.ceil(total / limit)),
-    users: users.map((u) => ({
-      id: u._id.toString(),
-      fullName: u.fullName,
-      email: u.email,
-      phone: u.phone,
-      role: u.role,
-      isActive: u.isActive,
-      isEmailVerified: u.isEmailVerified,
-      profileCompleted: u.profileCompleted,
-      createdAt: u.createdAt,
-      lastLoginAt: u.lastLoginAt,
-    })),
+    user: {
+      ...userRow(user),
+      avatarUrl: user.avatarUrl,
+      anonymizedAt: user.anonymizedAt,
+      notificationPrefs: user.notificationPrefs,
+      notificationChannels: user.notificationChannels,
+      stripeCustomerId: user.stripeCustomerId,
+    },
+    stats: { tripsTaken: tripCount, tripsDriven },
+    driver: profile ? { ...profile.toSafeJSON(), status: driverStatusOf(profile, user) } : null,
+    subscription: subscription ? subscription.toSafeJSON() : null,
+    earnings: { pendingCents: balance.pending || 0, processingCents: balance.processing || 0, paidCents: balance.paid || 0 },
+    trips: ridesAsRider.map((t) => t.toSafeJSON()),
+    tripsDriven: ridesAsDriver.map((t) => t.toSafeJSON()),
+    payments: payments.map((p) => p.toSafeJSON()),
+    rentals: rentals.map((b) => b.toSafeJSON()),
+    listings: ownedListings.map((l) => l.toSafeJSON()),
+    chauffeur: chauffeur.map((b) => b.toSafeJSON()),
+    disputes: disputes.map((d) => d.toSafeJSON()),
+    audit: auditRows.map((a) => a.toSafeJSON()),
   });
 });
 
-/** GET /api/admin/drivers?q=&status=&page=&limit= */
-export const listDrivers = asyncHandler(async (req, res) => {
-  const q = String(req.query.q || "").trim();
-  const statusFilter = String(req.query.status || "all").trim();
-  const { page, limit, skip } = parsePaging(req);
+const statusSchema = z.object({
+  action: z.enum(["suspend", "deactivate", "reactivate"]),
+  reason: z.string().trim().max(500).optional().default(""),
+});
 
-  const profileFilter = {};
-  if (statusFilter === "approved") {
-    profileFilter.verificationStatus = "approved";
-    profileFilter.isApproved = true;
-  } else if (statusFilter === "rejected") {
-    profileFilter.verificationStatus = "rejected";
-  } else if (statusFilter === "pending") {
-    profileFilter.$or = [
-      { verificationStatus: { $in: ["pending", "incomplete"] } },
-      { verificationStatus: "approved", isApproved: false },
-    ];
+/** Shared by PATCH /users/:id/status and the driver "suspended" status. */
+async function changeAccountStatus(req, user, action, reason) {
+  if (user.role === "admin") throw httpError(400, "Manage admin accounts from the Admins page");
+  if (user.anonymizedAt) throw httpError(400, "This account was deleted (GDPR) and can't be changed");
+  if (action !== "reactivate" && reason.length < 3) throw httpError(400, "Give a reason (at least 3 characters)");
+  const before = accountStatus(user);
+  if (action === "reactivate") {
+    user.isActive = true;
+    user.suspension = null;
+  } else {
+    user.isActive = false;
+    user.suspension = { status: action === "suspend" ? "suspended" : "deactivated", reason, at: new Date(), by: req.user._id };
+    // Sign them out everywhere and take a driver off the map
+    await User.updateOne({ _id: user._id }, { $set: { refreshTokens: [] } });
+    await DriverProfile.updateOne({ userId: user._id }, { $set: { isOnline: false } });
   }
+  await user.save();
+  await audit(req, `user.${action}`, "User", user._id, { from: before, to: accountStatus(user), reason });
+  const copy = {
+    suspend: ["Your RideRite account is suspended", `Your account has been suspended${reason ? `: ${reason}` : ""}. Contact support if you think this is a mistake.`],
+    deactivate: ["Your RideRite account was deactivated", `Your account has been deactivated${reason ? `: ${reason}` : ""}.`],
+    reactivate: ["Your RideRite account is active again", "Welcome back — you can sign in and use RideRite again."],
+  }[action];
+  await notifyUser(user._id, { category: "system", title: copy[0], body: copy[1], data: { href: "/dashboard" }, email: true });
+  return user;
+}
 
+/** PATCH /api/admin/users/:id/status — body: { action: suspend|deactivate|reactivate, reason } */
+export const setUserStatus = asyncHandler(async (req, res) => {
+  const { action, reason } = statusSchema.parse(req.body || {});
+  const user = await User.findById(requireObjectId(req.params.id));
+  if (!user) throw httpError(404, "User not found");
+  await changeAccountStatus(req, user, action, reason);
+  res.json({ ok: true, user: userRow(user) });
+});
+
+/** PATCH /api/admin/users/:id/active — legacy toggle: { isActive, reason? } */
+export const setUserActive = asyncHandler(async (req, res) => {
+  const user = await User.findById(requireObjectId(req.params.id));
+  if (!user) throw httpError(404, "User not found");
+  const reason = String(req.body?.reason || "Suspended by admin").trim();
+  await changeAccountStatus(req, user, req.body?.isActive ? "reactivate" : "suspend", reason);
+  res.json({ ok: true, user: { id: user._id.toString(), isActive: user.isActive, email: user.email } });
+});
+
+/**
+ * PATCH /api/admin/users/:id/role — body: { role: rider|driver }. Making someone a driver gives
+ * them an (incomplete) driver profile: they still go through KYC before they can drive.
+ * Admin accounts are managed from /api/admin/admins.
+ */
+export const setUserRole = asyncHandler(async (req, res) => {
+  const role = String(req.body?.role || "").trim();
+  if (!["rider", "driver"].includes(role)) throw httpError(400, "role must be rider or driver (admins are managed from the Admins page)");
+  const user = await User.findById(requireObjectId(req.params.id));
+  if (!user) throw httpError(404, "User not found");
+  if (user.role === "admin") throw httpError(400, "Manage admin accounts from the Admins page");
+  const from = user.role;
+  if (from === role) return res.json({ ok: true, user: userRow(user) });
+  let createdProfile = false;
+  if (role === "driver" && !(await DriverProfile.exists({ userId: user._id }))) {
+    await DriverProfile.create({ userId: user._id, isApproved: false, verificationStatus: "incomplete" });
+    createdProfile = true;
+  }
+  if (role === "rider") await DriverProfile.updateOne({ userId: user._id }, { $set: { isOnline: false } });
+  user.role = role;
+  await user.save();
+  await audit(req, "user.role", "User", user._id, { from, to: role, createdDriverProfile: createdProfile });
+  res.json({ ok: true, user: userRow(user), createdDriverProfile: createdProfile });
+});
+
+// ----------------------------------------------------------------------------- drivers
+
+function driverStatusOf(p, user) {
+  if (user && !user.isActive && user.suspension?.status) return user.suspension.status;
+  if (p.verificationStatus === "approved" && p.isApproved) return "approved";
+  if (p.verificationStatus === "rejected") return "rejected";
+  if (p.verificationStatus === "incomplete") return "incomplete";
+  return "pending";
+}
+
+async function driverFilter(req) {
+  const q = String(req.query.q || "").trim();
+  const status = String(req.query.status || "all");
+  const filter = {};
+  const and = [];
+  if (status === "approved") Object.assign(filter, { verificationStatus: "approved", isApproved: true });
+  else if (status === "rejected") filter.verificationStatus = "rejected";
+  else if (status === "incomplete") filter.verificationStatus = "incomplete";
+  // KYC queue: submitted applications only (not profiles still being filled in)
+  else if (status === "pending") and.push({ $or: [{ verificationStatus: "pending" }, { verificationStatus: "approved", isApproved: false }] });
+  else if (status === "documents") {
+    and.push({ $or: ["license", "registration", "insurance"].map((d) => ({ [`documentReview.${d}.status`]: "pending" })) });
+  } else if (status === "vehicle_change") filter.pendingVehicleChange = { $ne: null };
+  else if (status === "suspended") {
+    const ids = await User.find({ role: "driver", "suspension.status": { $in: ["suspended", "deactivated"] } }).select("_id").lean();
+    filter.userId = { $in: ids.map((u) => u._id) };
+  }
   if (q) {
     const rx = new RegExp(escapeRegex(q), "i");
-    const matchedUsers = await User.find({
-      $or: [{ email: rx }, { fullName: rx }, { phone: rx }],
-    })
-      .select("_id")
-      .lean();
-    const matchedIds = matchedUsers.map((u) => u._id);
-    profileFilter.$and = [
-      ...(profileFilter.$and || []),
-      {
-        $or: [
-          { userId: { $in: matchedIds } },
-          { vehiclePlate: rx },
-          { vehicleMake: rx },
-          { vehicleModel: rx },
-        ],
-      },
-    ];
+    and.push({
+      $or: [{ userId: { $in: await userIdsMatching(q) } }, { vehiclePlate: rx }, { vehicleMake: rx }, { vehicleModel: rx }],
+    });
   }
+  if (and.length) filter.$and = and;
+  return filter;
+}
 
+function driverRow(p, u) {
+  const documents = documentsPayload(p);
+  return {
+    id: p._id.toString(),
+    userId: p.userId.toString(),
+    fullName: u?.fullName ?? null,
+    email: u?.email ?? null,
+    phone: u?.phone ?? null,
+    isActive: u?.isActive ?? null,
+    vehicleType: p.vehicleType,
+    vehicleMake: p.vehicleMake,
+    vehicleModel: p.vehicleModel,
+    vehicleYear: p.vehicleYear,
+    vehiclePlate: p.vehiclePlate,
+    verificationStatus: p.verificationStatus,
+    isApproved: Boolean(p.isApproved),
+    isOnline: Boolean(p.isOnline),
+    status: driverStatusOf(p, u),
+    reviewDecision: p.reviewDecision ? { status: p.reviewDecision.status, reason: p.reviewDecision.reason || "", at: p.reviewDecision.at } : null,
+    createdAt: p.createdAt,
+    verificationSubmittedAt: p.verificationSubmittedAt,
+    documents,
+    documentsPending: Object.values(documents).filter((d) => d.status === "pending").length,
+    pendingVehicleChange: p.pendingVehicleChange || null,
+  };
+}
+
+/** GET /api/admin/drivers?q=&status=all|pending|incomplete|approved|rejected|suspended|documents|vehicle_change */
+export const listDrivers = asyncHandler(async (req, res) => {
+  const filter = await driverFilter(req);
+  const paging = parsePaging(req);
   const [total, profiles] = await Promise.all([
-    DriverProfile.countDocuments(profileFilter),
-    DriverProfile.find(profileFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    DriverProfile.countDocuments(filter),
+    DriverProfile.find(filter).sort({ verificationSubmittedAt: -1, createdAt: -1 }).skip(paging.skip).limit(paging.limit).lean(),
   ]);
-
-  const userIds = profiles.map((p) => p.userId);
-  const users = await User.find({ _id: { $in: userIds } })
-    .select("fullName email phone role")
-    .lean();
+  const users = await User.find({ _id: { $in: profiles.map((p) => p.userId) } }).select("fullName email phone isActive suspension").lean();
   const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  res.json(paged(paging, total, "drivers", profiles.map((p) => driverRow(p, byId.get(p.userId.toString())))));
+});
 
+/** GET /api/admin/drivers/:userId — profile, documents, vehicle change, membership, earnings, bonuses, maintenance */
+export const getDriver = asyncHandler(async (req, res) => {
+  const userId = requireObjectId(req.params.userId);
+  const [user, profile] = await Promise.all([User.findById(userId), DriverProfile.findOne({ userId })]);
+  if (!user || !profile) throw httpError(404, "Driver not found");
+  const [subscription, trips, bonuses, maintenance, ledger, payouts, auditRows] = await Promise.all([
+    DriverSubscription.findOne({ userId }),
+    Trip.find({ driverId: userId }).sort({ createdAt: -1 }).limit(20),
+    DriverBonus.find({ userId }).sort({ monthKey: -1 }).limit(12),
+    MaintenanceRecord.find({ userId }).sort({ createdAt: -1 }).limit(20),
+    DriverEarning.aggregate([{ $match: { driverId: userId } }, { $group: { _id: "$status", total: { $sum: "$netCents" } } }]),
+    DriverPayout.find({ driverId: userId }).sort({ createdAt: -1 }).limit(10),
+    AuditLog.find({ targetId: { $in: [userId.toString(), profile._id.toString()] } }).sort({ createdAt: -1 }).limit(50),
+  ]);
+  const balance = Object.fromEntries(ledger.map((l) => [l._id, l.total]));
   res.json({
     ok: true,
-    page,
-    limit,
-    total,
-    totalPages: Math.max(1, Math.ceil(total / limit)),
-    drivers: profiles.map((p) => {
-      const u = byId.get(p.userId.toString());
-      const status = driverStatusOf(p);
-      return {
-        id: p._id.toString(),
-        userId: p.userId.toString(),
-        fullName: u?.fullName ?? null,
-        email: u?.email ?? null,
-        phone: u?.phone ?? null,
-        vehicleType: p.vehicleType,
-        vehicleMake: p.vehicleMake,
-        vehicleModel: p.vehicleModel,
-        vehicleYear: p.vehicleYear,
-        vehiclePlate: p.vehiclePlate,
-        verificationStatus: p.verificationStatus,
-        isApproved: Boolean(p.isApproved),
-        isOnline: Boolean(p.isOnline),
-        status,
-        createdAt: p.createdAt,
-        verificationSubmittedAt: p.verificationSubmittedAt,
-        /** License / registration / insurance: files, expiry, per-document review */
-        documents: documentsPayload(p),
-        /** Vehicle type / plate change awaiting review (driver keeps the approved vehicle) */
-        pendingVehicleChange: p.pendingVehicleChange || null,
-      };
-    }),
+    driver: {
+      ...profile.toSafeJSON(),
+      ...driverRow(profile.toObject(), user),
+      user: userRow(user),
+    },
+    subscription: subscription ? subscription.toSafeJSON() : null,
+    earnings: { pendingCents: balance.pending || 0, processingCents: balance.processing || 0, paidCents: balance.paid || 0 },
+    trips: trips.map((t) => t.toSafeJSON()),
+    bonuses: bonuses.map((b) => b.toSafeJSON()),
+    maintenance: maintenance.map((m) => m.toSafeJSON()),
+    payouts: payouts.map((p) => p.toSafeJSON()),
+    audit: auditRows.map((a) => a.toSafeJSON()),
   });
+});
+
+/**
+ * PATCH /api/admin/drivers/:userId/status — body: { status: approved|rejected|pending|suspended, reason }
+ * Rejection needs a reason; it is stored on the profile and sent to the driver. "suspended"
+ * suspends the account (same as the users page).
+ */
+export const setDriverStatus = asyncHandler(async (req, res) => {
+  const status = String(req.body?.status || "").trim();
+  const reason = String(req.body?.reason ?? "").trim().slice(0, 500);
+  if (!["pending", "approved", "rejected", "suspended"].includes(status)) throw httpError(400, "Invalid driver status");
+  const userId = requireObjectId(req.params.userId);
+  const profile = await DriverProfile.findOne({ userId });
+  if (!profile) throw httpError(404, "Driver profile not found");
+  const user = await User.findById(userId);
+  if (!user) throw httpError(404, "User not found");
+
+  if (status === "suspended") {
+    await changeAccountStatus(req, user, "suspend", reason || "Driver account suspended");
+    return res.json({ ok: true, driver: driverRow(profile.toObject(), user) });
+  }
+  if (status === "rejected" && reason.length < 5) throw httpError(400, "Give the driver a rejection reason (at least 5 characters)");
+
+  const from = driverStatusOf(profile, user);
+  profile.isOnline = false;
+  if (status === "approved") {
+    profile.verificationStatus = "approved";
+    profile.isApproved = true;
+    markUploadedDocumentsApproved(profile);
+  } else {
+    profile.verificationStatus = status;
+    profile.isApproved = false;
+  }
+  profile.reviewDecision = { status, reason, at: new Date(), by: req.user._id };
+  await profile.save();
+
+  if (status === "approved") {
+    user.role = "driver";
+    user.isActive = true;
+    user.suspension = null;
+  } else if (status === "rejected") {
+    // Rejected drivers cannot log in (existing policy); the reason goes out by email first
+    user.isActive = false;
+  } else {
+    user.isActive = true;
+  }
+  await user.save();
+  await audit(req, `driver.${status}`, "User", user._id, { from, to: status, reason });
+  if (status !== "pending") {
+    await notifyUser(user._id, {
+      category: "system",
+      title: status === "approved" ? "You're approved to drive" : "Your driver application wasn't approved",
+      body:
+        status === "approved"
+          ? "Your documents were verified. Go online from the driver hub to start taking rides."
+          : `Reason: ${reason}`,
+      data: { href: "/driver" },
+      email: true,
+    });
+  }
+  res.json({ ok: true, driver: driverRow(profile.toObject(), user) });
 });
 
 /** PATCH /api/admin/drivers/:userId/documents/:doc — body: { status: approved|rejected, note? } */
 export const reviewDriverDocument = asyncHandler(async (req, res) => {
-  const profile = await reviewDocument(req.params.userId, req.params.doc, {
-    status: String(req.body?.status || ""),
-    note: String(req.body?.note || "").trim(),
-  });
-  await audit(req.user._id, "driver.document.review", "DriverProfile", profile._id.toString(), {
-    doc: req.params.doc,
-    status: req.body?.status,
-  });
+  const note = String(req.body?.note || "").trim().slice(0, 500);
+  const status = String(req.body?.status || "");
+  if (status === "rejected" && note.length < 3) throw httpError(400, "Say what's wrong with the document (note)");
+  const profile = await reviewDocument(String(requireObjectId(req.params.userId, "userId")), req.params.doc, { status, note });
+  await audit(req, `driver.document.${status}`, "User", profile.userId, { doc: req.params.doc, note });
   res.json({ ok: true, documents: documentsPayload(profile) });
 });
 
@@ -262,615 +401,288 @@ export const reviewDriverDocument = asyncHandler(async (req, res) => {
 export const reviewDriverVehicleChange = asyncHandler(async (req, res) => {
   const action = String(req.body?.action || "");
   if (!["approve", "reject"].includes(action)) throw httpError(400, "action must be approve or reject");
-  const profile = await reviewVehicleChange(req.params.userId, {
-    approve: action === "approve",
-    note: String(req.body?.note || "").trim(),
+  const note = String(req.body?.note || "").trim().slice(0, 500);
+  const profile = await reviewVehicleChange(String(requireObjectId(req.params.userId, "userId")), { approve: action === "approve", note });
+  await audit(req, `driver.vehicle_change.${action}`, "User", profile.userId, {
+    change: profile.lastVehicleChangeReview?.change || null,
+    note,
   });
-  await audit(req.user._id, `driver.vehicle_change.${action}`, "DriverProfile", profile._id.toString());
   res.json({ ok: true, driver: profile.toSafeJSON() });
 });
 
-/** PATCH /api/admin/users/:id/role — body: { role } */
-export const setUserRole = asyncHandler(async (req, res) => {
-  const role = String(req.body?.role || "").trim();
-  if (!["rider", "driver", "admin"].includes(role)) {
-    throw httpError(400, "role must be rider, driver, or admin");
-  }
-  const user = await User.findById(req.params.id);
+// ----------------------------------------------------------------------------- exports
+
+const USER_COLUMNS = [
+  { key: "id", label: "ID", width: 26 },
+  { key: "fullName", label: "Full name", width: 24 },
+  { key: "email", label: "Email", width: 30 },
+  { key: "phone", label: "Phone", width: 16 },
+  { key: "role", label: "Role" },
+  { key: "status", label: "Status" },
+  { key: "suspensionReason", label: "Suspension reason", width: 30 },
+  { key: "emailVerified", label: "Email verified" },
+  { key: "createdAt", label: "Created", width: 22 },
+  { key: "lastLoginAt", label: "Last login", width: 22 },
+];
+
+const DRIVER_COLUMNS = [
+  { key: "userId", label: "User ID", width: 26 },
+  { key: "fullName", label: "Full name", width: 24 },
+  { key: "email", label: "Email", width: 30 },
+  { key: "phone", label: "Phone", width: 16 },
+  { key: "status", label: "Status" },
+  { key: "vehicleType", label: "Vehicle type" },
+  { key: "vehicle", label: "Vehicle", width: 26 },
+  { key: "plate", label: "Plate" },
+  { key: "documentsPending", label: "Docs pending" },
+  { key: "reviewReason", label: "Review reason", width: 30 },
+  { key: "isOnline", label: "Online" },
+  { key: "submittedAt", label: "Submitted", width: 22 },
+  { key: "createdAt", label: "Created", width: 22 },
+];
+
+const exportFormat = (req) => (String(req.params.format || req.query.format || "csv") === "xlsx" ? "xlsx" : "csv");
+
+/** GET /api/admin/export/users.(csv|xlsx) — same filters as the users list */
+export const exportUsers = asyncHandler(async (req, res) => {
+  const users = await User.find(userFilter(req)).sort({ createdAt: -1 }).limit(20000).lean();
+  const rows = users.map((u) => ({
+    id: u._id.toString(),
+    fullName: u.fullName,
+    email: u.email ?? "",
+    phone: u.phone ?? "",
+    role: u.role,
+    status: accountStatus(u),
+    suspensionReason: u.suspension?.reason || "",
+    emailVerified: Boolean(u.isEmailVerified),
+    createdAt: u.createdAt,
+    lastLoginAt: u.lastLoginAt || "",
+  }));
+  const format = exportFormat(req);
+  await audit(req, "export.users", "User", "", { format, rows: rows.length, filters: req.query });
+  await sendExport(res, { format, name: "users", columns: USER_COLUMNS, rows });
+});
+
+/** GET /api/admin/export/drivers.(csv|xlsx) — same filters as the drivers list */
+export const exportDrivers = asyncHandler(async (req, res) => {
+  const profiles = await DriverProfile.find(await driverFilter(req)).sort({ createdAt: -1 }).limit(20000).lean();
+  const users = await User.find({ _id: { $in: profiles.map((p) => p.userId) } }).select("fullName email phone isActive suspension").lean();
+  const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  const rows = profiles.map((p) => {
+    const d = driverRow(p, byId.get(p.userId.toString()));
+    return {
+      userId: d.userId,
+      fullName: d.fullName ?? "",
+      email: d.email ?? "",
+      phone: d.phone ?? "",
+      status: d.status,
+      vehicleType: d.vehicleType,
+      vehicle: [d.vehicleYear, d.vehicleMake, d.vehicleModel].filter(Boolean).join(" "),
+      plate: d.vehiclePlate || "",
+      documentsPending: d.documentsPending,
+      reviewReason: d.reviewDecision?.reason || "",
+      isOnline: d.isOnline,
+      submittedAt: d.verificationSubmittedAt || "",
+      createdAt: d.createdAt,
+    };
+  });
+  const format = exportFormat(req);
+  await audit(req, "export.drivers", "DriverProfile", "", { format, rows: rows.length, filters: req.query });
+  await sendExport(res, { format, name: "drivers", columns: DRIVER_COLUMNS, rows });
+});
+
+// ----------------------------------------------------------------------------- GDPR
+
+/** GET /api/admin/users/:id/gdpr-export — everything stored about a user, as a JSON download */
+export const gdprExport = asyncHandler(async (req, res) => {
+  const id = requireObjectId(req.params.id);
+  const user = await User.findById(id);
   if (!user) throw httpError(404, "User not found");
-  if (user._id.toString() === req.user._id.toString() && role !== "admin") {
-    throw httpError(400, "Cannot demote your own admin role");
-  }
-  user.role = role;
-  await user.save();
-  res.json({
-    ok: true,
+  const [
+    driverProfile,
+    subscription,
+    tripsAsRider,
+    tripsAsDriver,
+    payments,
+    rentalBookings,
+    listings,
+    chauffeur,
+    notifications,
+    addresses,
+    earnings,
+    payouts,
+    bonuses,
+    maintenance,
+    disputes,
+    messages,
+  ] = await Promise.all([
+    DriverProfile.findOne({ userId: id }),
+    DriverSubscription.findOne({ userId: id }),
+    Trip.find({ riderId: id }).sort({ createdAt: -1 }),
+    Trip.find({ driverId: id }).sort({ createdAt: -1 }),
+    Payment.find({ userId: id }).sort({ createdAt: -1 }),
+    RentalBooking.find({ $or: [{ renterId: id }, { ownerId: id }] }),
+    RentalListing.find({ ownerId: id }),
+    ChauffeurBooking.find({ $or: [{ riderId: id }, { driverId: id }] }),
+    Notification.find({ userId: id }).sort({ createdAt: -1 }),
+    SavedAddress.find({ userId: id }),
+    DriverEarning.find({ driverId: id }).lean(),
+    DriverPayout.find({ driverId: id }),
+    DriverBonus.find({ userId: id }),
+    MaintenanceRecord.find({ userId: id }),
+    Dispute.find({ $or: [{ riderId: id }, { driverId: id }] }),
+    TripMessage.find({ senderId: id }),
+  ]);
+  const json = (rows) => rows.map((r) => (typeof r.toSafeJSON === "function" ? r.toSafeJSON() : r));
+  const data = {
+    exportedAt: new Date(),
+    format: "riderite-gdpr-export/1",
     user: {
-      id: user._id.toString(),
-      fullName: user.fullName,
-      email: user.email,
-      role: user.role,
+      ...user.toSafeJSON(),
+      suspension: user.suspension || null,
+      anonymizedAt: user.anonymizedAt,
+      notificationPrefs: user.notificationPrefs,
+      notificationChannels: user.notificationChannels,
     },
-  });
+    driverProfile: driverProfile ? driverProfile.toSafeJSON() : null,
+    subscription: subscription ? subscription.toSafeJSON() : null,
+    trips: { asRider: json(tripsAsRider), asDriver: json(tripsAsDriver) },
+    payments: json(payments),
+    rentals: { bookings: json(rentalBookings), listings: json(listings) },
+    chauffeurBookings: json(chauffeur),
+    notifications: json(notifications),
+    savedAddresses: json(addresses),
+    earnings: earnings.map((e) => ({ ...e, _id: String(e._id) })),
+    payouts: json(payouts),
+    bonuses: json(bonuses),
+    maintenance: json(maintenance),
+    disputes: json(disputes),
+    chatMessages: json(messages),
+  };
+  await audit(req, "user.gdpr_export", "User", id, { email: user.email });
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="riderite-user-${id}.json"`);
+  res.send(JSON.stringify(data, null, 2));
 });
 
-/** PATCH /api/admin/drivers/:userId/status — body: { status, reason? } */
-export const setDriverStatus = asyncHandler(async (req, res) => {
-  const status = String(req.body?.status || "").trim();
-  const reason = req.body?.reason != null ? String(req.body.reason).trim() : null;
-  if (!["pending", "approved", "rejected", "suspended"].includes(status)) {
-    throw httpError(400, "Invalid driver status");
-  }
-
-  const profile = await DriverProfile.findOne({ userId: req.params.userId });
-  if (!profile) throw httpError(404, "Driver profile not found");
-
-  if (status === "approved") {
-    profile.verificationStatus = "approved";
-    profile.isApproved = true;
-    profile.isOnline = false;
-    markUploadedDocumentsApproved(profile);
-  } else if (status === "rejected" || status === "suspended") {
-    profile.verificationStatus = "rejected";
-    profile.isApproved = false;
-    profile.isOnline = false;
-  } else {
-    profile.verificationStatus = "pending";
-    profile.isApproved = false;
-    profile.isOnline = false;
-  }
-  // reason reserved for audit/email hooks later
-  void reason;
-  await profile.save();
-
-  if (status === "approved") {
-    await User.findByIdAndUpdate(profile.userId, {
-      role: "driver",
-      isActive: true,
-    });
-  } else if (status === "rejected" || status === "suspended") {
-    // Rejected drivers cannot log in
-    await User.findByIdAndUpdate(profile.userId, { isActive: false });
-  } else {
-    await User.findByIdAndUpdate(profile.userId, { isActive: true });
-  }
-
-  res.json({
-    ok: true,
-    driver: {
-      userId: profile.userId.toString(),
-      verificationStatus: profile.verificationStatus,
-      isApproved: profile.isApproved,
-      status,
-    },
-  });
-});
-
-/** GET /api/admin/trips */
-export const listTrips = asyncHandler(async (req, res) => {
-  const status = String(req.query.status || "all");
-  const filter =
-    status === "all"
-      ? {}
-      : status === "active"
-        ? { status: { $in: ACTIVE_TRIP_STATUSES } }
-        : { status };
-
-  const trips = await Trip.find(filter)
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .lean();
-
-  res.json({
-    ok: true,
-    trips: trips.map((t) => ({
-      id: t._id.toString(),
-      status: t.status,
-      pickupAddress: t.pickupAddress,
-      destinationAddress: t.destinationAddress,
-      vehicleType: t.vehicleType,
-      paymentMethod: t.paymentMethod,
-      paid: Boolean(t.paid),
-      fareCents: t.fareCents,
-      cancelFeeCents: t.cancelFeeCents ?? 0,
-      refundCents: t.refundCents ?? 0,
-      riderId: t.riderId?.toString() ?? null,
-      driverId: t.driverId?.toString() ?? null,
-      createdAt: t.createdAt,
-    })),
-  });
-});
-
-/** GET /api/admin/subscriptions */
-export const listSubscriptions = asyncHandler(async (_req, res) => {
-  const rows = await DriverSubscription.find().sort({ updatedAt: -1 }).limit(200).lean();
-  const userIds = rows.map((r) => r.userId);
-  const users = await User.find({ _id: { $in: userIds } }).select("fullName email").lean();
-  const byId = new Map(users.map((u) => [u._id.toString(), u]));
-  res.json({
-    ok: true,
-    subscriptions: rows.map((s) => ({
-      id: s._id.toString(),
-      userId: s.userId.toString(),
-      fullName: byId.get(s.userId.toString())?.fullName ?? null,
-      email: byId.get(s.userId.toString())?.email ?? null,
-      plan: s.plan,
-      status: s.status,
-      amountCents: s.amountCents,
-      currentPeriodEnd: s.currentPeriodEnd,
-      active: s.status === "active" && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > new Date(),
-    })),
-  });
-});
-
-/** GET /api/admin/rentals/listings */
-export const listRentalListings = asyncHandler(async (req, res) => {
-  const filter = {};
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.source) filter.source = req.query.source;
-  const rows = await RentalListing.find(filter).sort({ createdAt: -1 }).limit(200);
-  res.json({ ok: true, listings: rows.map((r) => r.toSafeJSON()) });
-});
-
-/** PATCH /api/admin/rentals/listings/:id — approve/pause fleet or peer listings */
-export const updateRentalListing = asyncHandler(async (req, res) => {
-  const row = await RentalListing.findById(req.params.id);
-  if (!row) throw httpError(404, "Listing not found");
-  if (req.body?.status) row.status = req.body.status;
-  if (req.body?.dailyRateCents != null) row.dailyRateCents = Number(req.body.dailyRateCents);
-  if (row.status === "active") {
-    // Approved: this price is the new baseline for the owner's >50% re-review rule
-    row.approvedDailyRateCents = row.dailyRateCents;
-    row.reviewReason = null;
-  }
-  await row.save();
-  await audit(req.user._id, "rental.listing.update", "RentalListing", row._id.toString(), {
-    status: row.status,
-  });
-  res.json({ ok: true, listing: row.toSafeJSON() });
-});
-
-/** GET /api/admin/rentals/bookings */
-export const listRentalBookings = asyncHandler(async (_req, res) => {
-  const rows = await RentalBooking.find().sort({ createdAt: -1 }).limit(200);
-  res.json({ ok: true, bookings: rows.map((r) => r.toSafeJSON()) });
-});
-
-/** GET /api/admin/chauffeur */
-export const listChauffeur = asyncHandler(async (_req, res) => {
-  const rows = await ChauffeurBooking.find().sort({ createdAt: -1 }).limit(200);
-  res.json({ ok: true, bookings: rows.map((r) => r.toSafeJSON()) });
-});
-
-/** GET /api/admin/bonuses */
-export const listBonuses = asyncHandler(async (req, res) => {
-  const filter = {};
-  if (req.query.status) filter.status = req.query.status;
-  const rows = await DriverBonus.find(filter).sort({ createdAt: -1 }).limit(200).lean();
-  const userIds = rows.map((r) => r.userId);
-  const users = await User.find({ _id: { $in: userIds } }).select("fullName email").lean();
-  const byId = new Map(users.map((u) => [u._id.toString(), u]));
-  res.json({
-    ok: true,
-    bonuses: rows.map((b) => ({
-      ...b,
-      id: b._id.toString(),
-      userId: b.userId.toString(),
-      fullName: byId.get(b.userId.toString())?.fullName ?? null,
-      email: byId.get(b.userId.toString())?.email ?? null,
-    })),
-  });
-});
-
-/**
- * PATCH /api/admin/bonuses/:id — body: { status: approved|rejected|disbursed, adminNotes?, giftCardCode? }
- * Approving a pending bonus credits it to the driver's earnings ledger (paid with the next
- * payout); giftCardCode is optional, for when a gift card is sent manually.
- */
-export const updateBonus = asyncHandler(async (req, res) => {
-  const row = await reviewBonus(req.params.id, {
-    status: req.body?.status,
-    adminNotes: req.body?.adminNotes,
-    giftCardCode: req.body?.giftCardCode,
-    reviewerId: req.user._id,
-  });
-  await audit(req.user._id, "bonus.update", "DriverBonus", row._id.toString(), {
-    status: row.status,
-  });
-  res.json({ ok: true, bonus: row.toSafeJSON() });
-});
-
-/** GET /api/admin/maintenance */
-export const listMaintenance = asyncHandler(async (_req, res) => {
-  const rows = await MaintenanceRecord.find().sort({ createdAt: -1 }).limit(200).lean();
-  const userIds = rows.map((r) => r.userId);
-  const users = await User.find({ _id: { $in: userIds } }).select("fullName email").lean();
-  const byId = new Map(users.map((u) => [u._id.toString(), u]));
-  res.json({
-    ok: true,
-    records: rows.map((r) => ({
-      id: r._id.toString(),
-      userId: r.userId.toString(),
-      fullName: byId.get(r.userId.toString())?.fullName ?? null,
-      email: byId.get(r.userId.toString())?.email ?? null,
-      type: r.type,
-      title: r.title,
-      status: r.status,
-      coveredByPlatform: r.coveredByPlatform,
-      costCents: r.costCents,
-      dueAt: r.dueAt,
-      scheduledFor: r.scheduledFor ?? null,
-      completedAt: r.completedAt,
-    })),
-  });
-});
-
-/**
- * PATCH /api/admin/maintenance/:id — body: { status?, notes?, costCents?, scheduledFor?, completedAt? }
- * Completing a service restarts that service's schedule from its completion date.
- */
-export const updateMaintenance = asyncHandler(async (req, res) => {
-  const row = await MaintenanceRecord.findById(req.params.id);
-  if (!row) throw httpError(404, "Record not found");
-  const status = req.body?.status;
-  if (status) {
-    if (!["requested", "scheduled", "completed", "cancelled"].includes(status)) {
-      throw httpError(400, "Invalid maintenance status");
-    }
-    row.status = status;
-    if (status === "completed") {
-      const at = req.body?.completedAt ? new Date(req.body.completedAt) : new Date();
-      row.completedAt = Number.isNaN(at.getTime()) ? new Date() : at;
-    }
-  }
-  if (req.body?.notes != null) row.notes = String(req.body.notes);
-  if (req.body?.costCents != null) {
-    const cost = Math.round(Number(req.body.costCents));
-    if (!Number.isFinite(cost) || cost < 0) throw httpError(400, "costCents must be ≥ 0");
-    row.costCents = cost;
-  }
-  if (req.body?.scheduledFor) {
-    const at = new Date(req.body.scheduledFor);
-    if (!Number.isNaN(at.getTime())) row.scheduledFor = at;
-  }
-  await row.save();
-  await audit(req.user._id, "maintenance.update", "MaintenanceRecord", row._id.toString(), { status: row.status });
-  if (status === "scheduled" || status === "completed") {
-    const { notifyUser } = await import("./notifications.controller.js");
-    await notifyUser(row.userId, {
-      category: "maintenance",
-      title: status === "completed" ? `${row.title} — done` : `${row.title} — booked`,
-      body:
-        status === "completed"
-          ? "Thanks — the service is recorded and your next one is now scheduled."
-          : `Your covered service is booked${row.scheduledFor ? ` for ${row.scheduledFor.toLocaleDateString("en-US")}` : ""}.`,
-      data: { href: "/driver", maintenanceId: row._id.toString() },
-    });
-  }
-  res.json({ ok: true, record: row.toSafeJSON() });
-});
-
-/** GET /api/admin/revenue */
-export const revenue = asyncHandler(async (_req, res) => {
-  const [tripGross, paidOnline, cancelFees, subs, rentalCommission, chauffeurGross, ledger, refunds] =
-    await Promise.all([
-      Trip.aggregate([
-        { $match: { status: "completed" } },
-        { $group: { _id: null, total: { $sum: "$fareCents" } } },
-      ]),
-      Payment.aggregate([
-        { $match: { status: "succeeded" } },
-        { $group: { _id: null, total: { $sum: "$amountCents" } } },
-      ]),
-      Trip.aggregate([
-        { $match: { status: "cancelled", cancelFeeCents: { $gt: 0 } } },
-        { $group: { _id: null, total: { $sum: "$cancelFeeCents" } } },
-      ]),
-      DriverSubscription.aggregate([
-        { $match: { status: "active" } },
-        { $group: { _id: "$plan", count: { $sum: 1 }, amount: { $sum: "$amountCents" } } },
-      ]),
-      RentalBooking.aggregate([
-        { $match: { paid: true } },
-        { $group: { _id: null, commission: { $sum: "$commissionCents" }, volume: { $sum: "$totalCents" } } },
-      ]),
-      ChauffeurBooking.aggregate([
-        { $match: { paid: true } },
-        { $group: { _id: null, total: { $sum: "$totalCents" } } },
-      ]),
-      DriverEarning.aggregate([
-        { $match: { status: { $ne: "void" } } },
+/** Why an account can't be erased yet (active trips, bookings or unsettled money), or []. */
+async function erasureBlockers(id) {
+  const now = new Date();
+  const [activeTrips, activeRentals, activeChauffeur, unsettled, pendingRefunds] = await Promise.all([
+    Trip.countDocuments({ $or: [{ riderId: id }, { driverId: id }], status: { $in: ACTIVE_TRIP_STATUSES } }),
+    RentalBooking.countDocuments({
+      $and: [
+        { $or: [{ renterId: id }, { ownerId: id }] },
         {
-          $group: {
-            _id: "$type",
-            commission: { $sum: "$commissionCents" },
-            net: { $sum: "$netCents" },
-            paid: { $sum: { $cond: [{ $eq: ["$status", "paid"] }, "$netCents", 0] } },
-          },
+          $or: [
+            { status: { $in: ["pending_payment", "confirmed", "active"] }, endDate: { $gt: now } },
+            { status: "active" },
+            { paymentStatus: "refunding" },
+          ],
         },
-      ]),
-      Payment.aggregate([{ $group: { _id: null, total: { $sum: "$refundedCents" } } }]),
-    ]);
-  const ledgerBy = Object.fromEntries(ledger.map((l) => [l._id, l]));
-
-  res.json({
-    ok: true,
-    tripGrossCents: tripGross[0]?.total ?? 0,
-    paidOnlineCents: paidOnline[0]?.total ?? 0,
-    cancelFeeCents: cancelFees[0]?.total ?? 0,
-    subscriptions: subs,
-    rentalCommissionCents: rentalCommission[0]?.commission ?? 0,
-    rentalVolumeCents: rentalCommission[0]?.volume ?? 0,
-    chauffeurGrossCents: chauffeurGross[0]?.total ?? 0,
-    rideCommissionCents: ledgerBy.trip?.commission ?? 0,
-    driverEarningsCents: ledger.reduce((a, l) => a + (l._id === "deduction" ? 0 : l.net), 0),
-    driverPaidOutCents: ledger.reduce((a, l) => a + l.paid, 0),
-    refundedCents: refunds[0]?.total ?? 0,
-  });
-});
-
-/** GET /api/admin/cancellations */
-export const listCancellations = asyncHandler(async (_req, res) => {
-  const trips = await Trip.find({ status: "cancelled" })
-    .sort({ cancelledAt: -1 })
-    .limit(200)
-    .lean();
-  res.json({
-    ok: true,
-    cancellations: trips.map((t) => ({
-      id: t._id.toString(),
-      cancelFeeCents: t.cancelFeeCents ?? 0,
-      refundCents: t.refundCents ?? 0,
-      cancelReason: t.cancelReason,
-      cancelledAt: t.cancelledAt,
-      fareCents: t.fareCents,
-      riderId: t.riderId?.toString() ?? null,
-      driverId: t.driverId?.toString() ?? null,
-    })),
-  });
-});
-
-/**
- * PATCH /api/admin/trips/:id/refund — body: { refundCents, reason? }
- * Refunds through Stripe (simulated in mock mode), capped at what is still refundable on the
- * trip's card payment. Only trips paid online can be refunded. Audit-logged.
- */
-export const refundTrip = asyncHandler(async (req, res) => {
-  const trip = await Trip.findById(req.params.id);
-  if (!trip) throw httpError(404, "Trip not found");
-  const requested = Math.round(Number(req.body?.refundCents) || 0);
-  if (requested <= 0) throw httpError(400, "refundCents must be a positive amount");
-  const payment = trip.paid ? await findTripPayment(trip._id) : null;
-  if (!payment) throw httpError(400, "This trip has no online payment to refund (unpaid or paid in cash)");
-  const remaining = payment.amountCents - (payment.refundedCents || 0);
-  if (remaining <= 0) throw httpError(400, "This trip's payment is already fully refunded");
-
-  const reason = String(req.body?.reason || "admin refund").slice(0, 200);
-  const result = await refundPayment(payment, Math.min(requested, remaining), { reason });
-  if (!result) throw httpError(400, "Nothing left to refund on this payment");
-  const after = await Payment.findById(payment._id);
-  trip.refundCents = after.refundedCents;
-  trip.paymentStatus = after.refundedCents >= after.amountCents ? "refunded" : "partial_refund";
-  await trip.save();
-  await audit(req.user._id, "trip.refund", "Trip", trip._id.toString(), {
-    requestedCents: requested,
-    refundedCents: result.amountCents,
-    totalRefundedCents: after.refundedCents,
-    refundId: result.refundId,
-    simulated: result.simulated,
-    reason,
-  });
-  res.json({
-    ok: true,
-    refund: { ...result, capped: result.amountCents < requested },
-    trip: trip.toSafeJSON(),
-    payment: after.toSafeJSON(),
-  });
-});
-
-/**
- * POST /api/admin/payouts/run — body: { driverId? }
- * Transfers every driver's pending earnings to their Stripe Connect account (simulated in
- * mock mode and for seeded acct_seedtest_* accounts).
- */
-export const runDriverPayouts = asyncHandler(async (req, res) => {
-  const driverId = req.body?.driverId ? String(req.body.driverId) : null;
-  if (driverId && !/^[a-f0-9]{24}$/i.test(driverId)) throw httpError(400, "Invalid driverId");
-  const results = await runPayouts({ driverId, initiatedBy: req.user._id });
-  const paid = results.filter((r) => r.payout?.status === "paid");
-  await audit(req.user._id, "payouts.run", "DriverPayout", driverId || "all", {
-    drivers: results.length,
-    paid: paid.length,
-    totalCents: paid.reduce((a, r) => a + r.payout.amountCents, 0),
-  });
-  res.json({ ok: true, results });
-});
-
-/** GET /api/admin/payouts?driverId=&status= */
-export const listPayouts = asyncHandler(async (req, res) => {
-  const filter = {};
-  if (req.query.driverId && /^[a-f0-9]{24}$/i.test(String(req.query.driverId))) filter.driverId = req.query.driverId;
-  if (["processing", "paid", "failed"].includes(String(req.query.status))) filter.status = req.query.status;
-  const rows = await DriverPayout.find(filter).sort({ createdAt: -1 }).limit(200);
-  const users = await User.find({ _id: { $in: rows.map((r) => r.driverId) } }).select("fullName email").lean();
-  const byId = new Map(users.map((u) => [u._id.toString(), u]));
-  const pending = await DriverEarning.aggregate([
-    { $match: { status: "pending" } },
-    { $group: { _id: null, total: { $sum: "$netCents" }, drivers: { $addToSet: "$driverId" } } },
+      ],
+    }),
+    ChauffeurBooking.countDocuments({
+      $or: [{ riderId: id }, { driverId: id }],
+      status: { $in: ["pending_payment", "requested", "confirmed", "driver_assigned", "in_progress"] },
+    }),
+    DriverEarning.aggregate([
+      { $match: { driverId: id, status: { $in: ["pending", "processing"] } } },
+      { $group: { _id: null, total: { $sum: "$netCents" }, n: { $sum: 1 } } },
+    ]),
+    Trip.countDocuments({ riderId: id, paymentStatus: { $in: ["refund_pending", "refunding"] } }),
   ]);
-  res.json({
-    ok: true,
-    pendingCents: pending[0]?.total ?? 0,
-    pendingDrivers: pending[0]?.drivers?.length ?? 0,
-    payouts: rows.map((p) => ({
-      ...p.toSafeJSON(),
-      fullName: byId.get(p.driverId.toString())?.fullName ?? null,
-      email: byId.get(p.driverId.toString())?.email ?? null,
-    })),
-  });
-});
-
-/** GET /api/admin/export/users.csv */
-export const exportUsersCsv = asyncHandler(async (_req, res) => {
-  const users = await User.find({ role: { $ne: "admin" } })
-    .sort({ createdAt: -1 })
-    .limit(5000)
-    .select("fullName email phone role isActive createdAt");
-  const lines = ["id,fullName,email,phone,role,isActive,createdAt"];
-  for (const u of users) {
-    lines.push(
-      [
-        u._id.toString(),
-        JSON.stringify(u.fullName || ""),
-        u.email,
-        JSON.stringify(u.phone || ""),
-        u.role,
-        u.isActive,
-        u.createdAt?.toISOString?.() || "",
-      ].join(","),
-    );
+  const blockers = [];
+  if (activeTrips) blockers.push(`${activeTrips} active trip(s)`);
+  if (activeRentals) blockers.push(`${activeRentals} upcoming or active rental booking(s)`);
+  if (activeChauffeur) blockers.push(`${activeChauffeur} open chauffeur booking(s)`);
+  if (unsettled[0]?.n && unsettled[0].total !== 0) {
+    blockers.push(`unsettled driver balance of $${(unsettled[0].total / 100).toFixed(2)} — run a payout first`);
   }
-  res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", "attachment; filename=users.csv");
-  res.send(lines.join("\n"));
-});
-
-/** GET /api/admin/export/drivers.csv */
-export const exportDriversCsv = asyncHandler(async (_req, res) => {
-  const profiles = await DriverProfile.find().sort({ createdAt: -1 }).limit(5000).lean();
-  const users = await User.find({ _id: { $in: profiles.map((p) => p.userId) } })
-    .select("fullName email phone")
-    .lean();
-  const byId = new Map(users.map((u) => [u._id.toString(), u]));
-  const lines = [
-    "userId,fullName,email,phone,vehicleType,plate,verificationStatus,isApproved,createdAt",
-  ];
-  for (const p of profiles) {
-    const u = byId.get(p.userId.toString());
-    lines.push(
-      [
-        p.userId.toString(),
-        JSON.stringify(u?.fullName || ""),
-        u?.email || "",
-        JSON.stringify(u?.phone || ""),
-        p.vehicleType,
-        p.vehiclePlate || "",
-        p.verificationStatus,
-        p.isApproved,
-        p.createdAt?.toISOString?.() || "",
-      ].join(","),
-    );
-  }
-  res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", "attachment; filename=drivers.csv");
-  res.send(lines.join("\n"));
-});
-
-/** GET /api/admin/health */
-export const health = asyncHandler(async (_req, res) => {
-  const started = Date.now();
-  const [users, trips, drivers] = await Promise.all([
-    User.countDocuments(),
-    Trip.countDocuments(),
-    DriverProfile.countDocuments(),
-  ]);
-  res.json({
-    ok: true,
-    latencyMs: Date.now() - started,
-    counts: { users, trips, drivers },
-    time: new Date().toISOString(),
-  });
-});
-
-/** GET /api/admin/audit */
-export const listAudit = asyncHandler(async (_req, res) => {
-  const rows = await AuditLog.find().sort({ createdAt: -1 }).limit(200);
-  res.json({ ok: true, logs: rows.map((r) => r.toSafeJSON()) });
-});
-
-/** PATCH /api/admin/users/:id/active — suspend/reactivate */
-export const setUserActive = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
-  if (!user) throw httpError(404, "User not found");
-  if (user.role === "admin") throw httpError(400, "Cannot suspend admin");
-  user.isActive = Boolean(req.body?.isActive);
-  await user.save();
-  await audit(req.user._id, "user.active", "User", user._id.toString(), {
-    isActive: user.isActive,
-  });
-  res.json({
-    ok: true,
-    user: { id: user._id.toString(), isActive: user.isActive, email: user.email },
-  });
-});
-
-const promoSchema = z
-  .object({
-    code: z.string().trim().min(2).max(40),
-    percentOff: z.number().min(1).max(100).nullable().optional(),
-    amountOffCents: z.number().int().min(1).nullable().optional(),
-    active: z.boolean().optional(),
-    expiresAt: z.coerce.date().nullable().optional(),
-    maxUses: z.number().int().min(1).nullable().optional(),
-    /** Notify riders who opted in to promotions (in-app, email, push) */
-    announce: z.boolean().optional(),
-  })
-  .refine((d) => Boolean(d.percentOff) !== Boolean(d.amountOffCents), {
-    message: "Set either percentOff or amountOffCents",
-  });
-
-/** GET /api/admin/promos */
-export const listPromos = asyncHandler(async (_req, res) => {
-  const rows = await PromoCode.find().sort({ createdAt: -1 }).limit(200);
-  res.json({ ok: true, promos: rows.map((p) => p.toSafeJSON()) });
-});
-
-/** POST /api/admin/promos */
-export const createPromo = asyncHandler(async (req, res) => {
-  const data = promoSchema.parse(req.body || {});
-  const code = data.code.toUpperCase();
-  if (await PromoCode.exists({ code })) throw httpError(409, "Promo code already exists");
-  const { announce, ...fields } = data;
-  const promo = await PromoCode.create({ ...fields, code });
-  await audit(req.user._id, "promo.create", "PromoCode", promo._id, { code });
-  if (announce && promo.active !== false) void announcePromo(promo);
-  res.status(201).json({ ok: true, promo: promo.toSafeJSON() });
-});
-
-/** Promo category notification to every rider who opted in (promo prefs default off). */
-async function announcePromo(promo) {
-  try {
-    const { notifyUser } = await import("./notifications.controller.js");
-    const off = promo.percentOff ? `${promo.percentOff}% off` : `$${(promo.amountOffCents / 100).toFixed(2)} off`;
-    const riders = await User.find({ role: "rider", isActive: true, "notificationPrefs.promo": true })
-      .select("_id")
-      .limit(5000)
-      .lean();
-    for (const r of riders) {
-      await notifyUser(r._id, {
-        category: "promo",
-        title: `${off} your next ride`,
-        body: `Use code ${promo.code} at checkout${promo.expiresAt ? ` before ${new Date(promo.expiresAt).toLocaleDateString("en-US")}` : ""}.`,
-        data: { href: "/ride", promoCode: promo.code },
-        email: true,
-      });
-    }
-  } catch (err) {
-    console.error("[promo] announce failed:", err.message);
-  }
+  if (pendingRefunds) blockers.push(`${pendingRefunds} refund(s) still being processed`);
+  return blockers;
 }
 
-/** PATCH /api/admin/promos/:id — body: { active?, expiresAt?, maxUses? } */
-export const updatePromo = asyncHandler(async (req, res) => {
-  const data = z
-    .object({
-      active: z.boolean().optional(),
-      expiresAt: z.coerce.date().nullable().optional(),
-      maxUses: z.number().int().min(1).nullable().optional(),
-    })
-    .parse(req.body || {});
-  const promo = await PromoCode.findByIdAndUpdate(req.params.id, data, { new: true });
-  if (!promo) throw httpError(404, "Promo not found");
-  await audit(req.user._id, "promo.update", "PromoCode", promo._id, data);
-  res.json({ ok: true, promo: promo.toSafeJSON() });
+/**
+ * DELETE /api/admin/users/:id — GDPR erasure. Personal data is removed or overwritten; trips,
+ * payments and ledger entries stay (accounting) but only reference the anonymous id. Blocked
+ * while the user has active trips / bookings or money still to settle.
+ */
+export const gdprDelete = asyncHandler(async (req, res) => {
+  const id = requireObjectId(req.params.id);
+  const user = await User.findById(id);
+  if (!user) throw httpError(404, "User not found");
+  if (user.role === "admin") throw httpError(400, "Remove admin access before deleting an admin account");
+  if (user.anonymizedAt) throw httpError(409, "This account was already deleted");
+  const blockers = await erasureBlockers(id);
+  if (blockers.length) {
+    throw httpError(409, `Can't delete this account yet: ${blockers.join("; ")}`, { code: "ERASURE_BLOCKED", blockers });
+  }
+  const reason = String(req.body?.reason || "GDPR erasure request").trim().slice(0, 300);
+  const originalEmail = user.email;
+  const now = new Date();
+
+  await User.updateOne(
+    { _id: id },
+    {
+      $set: {
+        fullName: "Deleted user",
+        phone: null,
+        avatarUrl: null,
+        passwordHash: null,
+        isActive: false,
+        isEmailVerified: false,
+        isPhoneVerified: false,
+        refreshTokens: [],
+        stripeCustomerId: null,
+        defaultPaymentMethodId: null,
+        anonymizedAt: now,
+        suspension: { status: "deleted", reason, at: now, by: req.user._id },
+        "notificationPrefs.promo": false,
+      },
+      $unset: { email: "", phoneE164: "", googleId: "", appleId: "" },
+    },
+  );
+  await DriverProfile.updateOne(
+    { userId: id },
+    {
+      $set: {
+        isOnline: false,
+        isApproved: false,
+        vehiclePlate: "",
+        vehicleVin: "",
+        dateOfBirth: null,
+        addressLine1: "",
+        city: "",
+        zip: "",
+        dlNumber: "",
+        dlExpiresOn: null,
+        licenseFrontUrl: null,
+        licenseBackUrl: null,
+        insurancePolicyNumber: "",
+        insuranceDocUrl: null,
+        registrationDocUrl: null,
+        homeLocation: { lat: null, lng: null, updatedAt: null },
+        lastLocation: { lat: null, lng: null, updatedAt: null },
+        pendingVehicleChange: null,
+      },
+    },
+  );
+  await Promise.all([
+    SavedAddress.deleteMany({ userId: id }),
+    PushSubscription.deleteMany({ userId: id }),
+    Notification.deleteMany({ userId: id }),
+    TripMessage.updateMany({ senderId: id }, { $set: { body: "[deleted]" } }),
+    Trip.updateMany({ riderId: id }, { $set: { riderReview: null } }),
+    RentalListing.updateMany({ ownerId: id, status: { $ne: "rejected" } }, { $set: { status: "paused" } }),
+    Dispute.updateMany({ riderId: id }, { $set: { description: "[deleted]" } }),
+  ]);
+  await audit(req, "user.gdpr_delete", "User", id, { reason, emailHash: originalEmail ? hashEmail(originalEmail) : null });
+  res.json({ ok: true, deleted: true, userId: id.toString() });
 });
+
+function hashEmail(email) {
+  // Keep a non-reversible fingerprint so a later "was X deleted?" question can be answered
+  return `sha256:${crypto.createHash("sha256").update(String(email).toLowerCase()).digest("hex").slice(0, 16)}`;
+}
+

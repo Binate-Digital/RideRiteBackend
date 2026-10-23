@@ -1,5 +1,5 @@
 import { DriverEarning, EARNING_TYPES } from "../models/DriverEarning.js";
-import { env } from "../config/env.js";
+import { getSettings } from "./settings.js";
 
 const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
 
@@ -10,7 +10,7 @@ const OFFLINE_PAY = new Set(["cash", "venmo", "zelle"]);
  */
 export function tripEarningBreakdown(trip) {
   const grossCents = Math.max(0, Math.round(trip.baseFareCents || 0));
-  const commissionCents = Math.round(grossCents * env.platformCommissionRate);
+  const commissionCents = Math.round(grossCents * getSettings().commission.platformRate);
   return { grossCents, commissionCents, netCents: grossCents - commissionCents };
 }
 
@@ -138,7 +138,7 @@ export async function adjustRentalOwnerEarning(booking, retainedCents) {
 export async function recordChauffeurEarning(booking) {
   if (!booking?.driverId) return null;
   const grossCents = Math.max(0, Math.round(booking.totalCents || 0));
-  const commissionCents = Math.round(grossCents * env.chauffeurCommissionRate);
+  const commissionCents = Math.round(grossCents * getSettings().commission.chauffeurRate);
   return insertOnce({
     driverId: booking.driverId,
     type: "chauffeur",

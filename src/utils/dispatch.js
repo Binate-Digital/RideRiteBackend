@@ -4,6 +4,7 @@ import { findNearbyOnlineDrivers, haversineMiles } from "./nearbyDrivers.js";
 import { broadcastTrip, emitToUser } from "../realtime/index.js";
 import { notifyUser } from "../controllers/notifications.controller.js";
 import { settleTripRefund } from "./refunds.js";
+import { getSettings } from "./settings.js";
 
 /**
  * Ride dispatch (TRD 4.3 / 5.3): a requested trip is offered to ONE driver at a
@@ -111,7 +112,7 @@ export async function advanceDispatch(
         $set: {
           offeredDriverId: next.userId,
           offeredAt: now,
-          offerExpiresAt: new Date(now.getTime() + env.dispatchOfferSeconds * 1000),
+          offerExpiresAt: new Date(now.getTime() + getSettings().dispatch.offerSeconds * 1000),
           dispatchStartedAt: startedAt,
         },
         $inc: { dispatchAttempts: 1 },
@@ -174,7 +175,7 @@ async function sendOffer(trip, driver) {
       pickupDistanceMiles: Math.round(driver.distanceMiles * 10) / 10,
     },
     offerExpiresAt: trip.offerExpiresAt,
-    offerSeconds: env.dispatchOfferSeconds,
+    offerSeconds: getSettings().dispatch.offerSeconds,
     // Lets the client correct for clock skew when counting down
     serverNow: new Date(),
   };
@@ -273,6 +274,6 @@ export function startDispatchSweeper() {
   }, env.dispatchSweepSeconds * 1000);
   sweeper.unref?.();
   console.log(
-    `[dispatch] offers ${env.dispatchOfferSeconds}s each, give up after ${env.dispatchMaxMinutes} min, sweep every ${env.dispatchSweepSeconds}s`,
+    `[dispatch] offers ${getSettings().dispatch.offerSeconds}s each, give up after ${env.dispatchMaxMinutes} min, sweep every ${env.dispatchSweepSeconds}s`,
   );
 }

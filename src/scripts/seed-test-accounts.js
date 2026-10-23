@@ -2,7 +2,8 @@
  * Create (or reset) ready-to-use test accounts for UAT / local QA:
  * one rider and four drivers that can go online and accept rides
  * immediately — email verified, KYC approved, vehicle + plate set,
- * active monthly subscription and Stripe Connect marked ready.
+ * active monthly subscription and Stripe Connect marked ready — plus
+ * one super admin for the admin panel (admin@riderite.test).
  *
  * Safe to re-run: accounts are matched by email and reset to this state
  * (password included). Drivers start OFFLINE — log in as each driver and
@@ -26,6 +27,8 @@ import { SEEDED_CONNECT_ACCOUNT_PREFIX } from "../utils/driverReadiness.js";
 const TEST_PASSWORD = "RideRite@Test123";
 
 const RIDER = { email: "rider1@riderite.test", fullName: "Test Rider", phone: "4075550100" };
+/** Admin panel login (RideRiteAdmin), full access */
+const ADMIN = { email: "admin@riderite.test", fullName: "Test Admin", phone: "4075550199" };
 
 /** Offsets (in miles, north/east of the base point) keep drivers apart on the map. */
 const DRIVERS = [
@@ -102,6 +105,9 @@ async function main() {
 
   await upsertUser(RIDER, "rider", passwordHash);
   console.log(`rider   ${RIDER.email}`);
+  const admin = await upsertUser(ADMIN, "admin", passwordHash);
+  await User.updateOne({ _id: admin._id }, { $set: { adminRole: "super_admin", suspension: null } });
+  console.log(`admin   ${ADMIN.email} (super_admin)`);
 
   for (const d of DRIVERS) {
     const user = await upsertUser(d, "driver", passwordHash);

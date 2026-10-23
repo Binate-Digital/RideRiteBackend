@@ -21,9 +21,9 @@ import { declineOffer } from "../utils/dispatch.js";
 import { driverEarningsSummary } from "../utils/earnings.js";
 import { DriverPayout } from "../models/DriverPayout.js";
 import { DriverEarning } from "../models/DriverEarning.js";
-import { env as appEnv } from "../config/env.js";
 import { driverCardsFor } from "../utils/tripDrivers.js";
 import { applyDocumentUpdates, applyVehicleUpdate } from "../utils/driverCompliance.js";
+import { getSettings } from "../utils/settings.js";
 
 /** Seeded QA accounts (scripts/seed-test-accounts*) use this email domain. */
 const TEST_ACCOUNT_DOMAIN = "@riderite.test";
@@ -293,7 +293,7 @@ export const getEarnings = asyncHandler(async (req, res) => {
   };
   res.json({
     ok: true,
-    commissionRate: appEnv.platformCommissionRate,
+    commissionRate: getSettings().commission.platformRate,
     totals,
     trips: entries.filter((e) => e.type === "trip").map(row),
     cancellationFees: entries.filter((e) => e.type === "cancellation_fee").map(row),

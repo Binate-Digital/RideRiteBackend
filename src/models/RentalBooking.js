@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { watchForAdmins } from "../utils/adminEvents.js";
 
 const rentalBookingSchema = new mongoose.Schema(
   {
@@ -43,6 +44,9 @@ const rentalBookingSchema = new mongoose.Schema(
   },
   { timestamps: true, minimize: false },
 );
+
+// Live admin dashboard counters (realtime/index.js)
+watchForAdmins(rentalBookingSchema, "rental");
 
 rentalBookingSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
