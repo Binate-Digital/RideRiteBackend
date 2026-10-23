@@ -62,4 +62,6 @@ export const env = {
     String(process.env.STRIPE_MOCK || "").toLowerCase() === "true" ||
     (!(process.env.STRIPE_SECRET_KEY || "") &&
       (process.env.NODE_ENV || "development") !== "production"),
+  /** QA helpers (e.g. driver "Simulate drive") for every account, not only @riderite.test ones. */
+  enableTestTools: String(process.env.ENABLE_TEST_TOOLS || "").toLowerCase() === "true",
 };

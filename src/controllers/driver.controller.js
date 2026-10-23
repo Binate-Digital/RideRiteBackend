@@ -1,4 +1,5 @@
 import { User } from "../models/User.js";
+import { env } from "../config/env.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
@@ -14,6 +15,15 @@ import {
   isStripeConnectReady,
 } from "../utils/driverReadiness.js";
 import { driverHasActiveSubscription } from "./subscriptions.controller.js";
+import { relayDriverLocation } from "../realtime/index.js";
+
+/** Seeded QA accounts (scripts/seed-test-accounts*) use this email domain. */
+const TEST_ACCOUNT_DOMAIN = "@riderite.test";
+
+/** Whether this driver's app should offer QA helpers such as "Simulate drive". */
+function testToolsEnabled(user) {
+  return env.enableTestTools || String(user.email || "").endsWith(TEST_ACCOUNT_DOMAIN);
+}
 
 async function getOrCreateProfile(user) {
   let profile = await DriverProfile.findOne({ userId: user._id });
@@ -39,6 +49,7 @@ export const getProfile = asyncHandler(async (req, res) => {
     user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
+    testTools: testToolsEnabled(req.user),
   });
 });
 
@@ -52,6 +63,7 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     ok: true,
     driver: profile.toSafeJSON(),
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
+    testTools: testToolsEnabled(req.user),
   });
 });
 
@@ -112,6 +124,7 @@ export const updateVerification = asyncHandler(async (req, res) => {
     user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
+    testTools: testToolsEnabled(req.user),
   });
 });
 
@@ -178,6 +191,7 @@ export const updateLocation = asyncHandler(async (req, res) => {
   const profile = await getOrCreateProfile(req.user);
   profile.lastLocation = { lat, lng, updatedAt: new Date() };
   await profile.save();
+  void relayDriverLocation(req.user._id, profile.lastLocation).catch(() => {});
   res.json({ ok: true, lastLocation: profile.lastLocation });
 });
 
@@ -193,5 +207,6 @@ export const ensureDriverRole = asyncHandler(async (req, res) => {
     user: req.user.toSafeJSON(),
     driver: profile.toSafeJSON(),
     readiness: driverReadinessPayload(profile, { subscriptionActive }),
+    testTools: testToolsEnabled(req.user),
   });
 });

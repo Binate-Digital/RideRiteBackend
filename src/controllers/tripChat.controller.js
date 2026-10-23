@@ -1,4 +1,5 @@
 import { Trip } from "../models/Trip.js";
+import { emitChatMessage } from "../realtime/index.js";
 import { TripMessage } from "../models/TripMessage.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
@@ -41,6 +42,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
     senderId: req.user._id,
     body,
   });
+  emitChatMessage(trip._id, row.toSafeJSON());
 
   try {
     const { notifyUser } = await import("./notifications.controller.js");

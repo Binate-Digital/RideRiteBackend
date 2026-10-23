@@ -2,6 +2,7 @@ import { Notification } from "../models/Notification.js";
 import { User } from "../models/User.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
+import { emitToUser } from "../realtime/index.js";
 
 /** GET /api/notifications */
 export const list = asyncHandler(async (req, res) => {
@@ -77,7 +78,9 @@ export async function notifyUser(userId, { category, title, body, data = {} }) {
     const user = await User.findById(userId).select("notificationPrefs");
     const prefs = user?.notificationPrefs || {};
     if (prefs[category] === false) return null;
-    return Notification.create({ userId, category, title, body, data });
+    const row = await Notification.create({ userId, category, title, body, data });
+    emitToUser(String(userId), "notification:new", { notification: row.toSafeJSON() });
+    return row;
   } catch {
     return null;
   }

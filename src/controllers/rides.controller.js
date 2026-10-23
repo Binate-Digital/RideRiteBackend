@@ -16,6 +16,7 @@ import {
   promoValidateSchema,
 } from "../validators/rides.schemas.js";
 import { resolvePromo, redeemPromo, discountFor } from "../utils/promos.js";
+import { broadcastTrip, broadcastRideClosed } from "../realtime/index.js";
 import {
   canDriverHandleRides,
   driverReadinessPayload,
@@ -241,6 +242,8 @@ export const cancel = asyncHandler(async (req, res) => {
   trip.cancelFeeCents = feeCents;
   trip.refundCents = refundCents;
   await trip.save();
+  broadcastTrip(trip);
+  broadcastRideClosed(trip._id);
 
   if (trip.driverId) {
     try {
@@ -357,6 +360,8 @@ export const accept = asyncHandler(async (req, res) => {
   if (!trip) {
     throw httpError(409, "Trip not available (already taken or wrong vehicle type)");
   }
+  broadcastTrip(trip);
+  broadcastRideClosed(trip._id);
 
   try {
     const { notifyUser } = await import("./notifications.controller.js");
@@ -444,6 +449,7 @@ export const updateStatus = asyncHandler(async (req, res) => {
   }
 
   await trip.save();
+  broadcastTrip(trip);
 
   try {
     const { notifyUser } = await import("./notifications.controller.js");
@@ -500,6 +506,7 @@ export const rate = asyncHandler(async (req, res) => {
   trip.riderRating = data.rating;
   trip.riderReview = data.review || null;
   await trip.save();
+  broadcastTrip(trip);
 
   res.json({ ok: true, trip: trip.toSafeJSON() });
 });

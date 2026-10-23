@@ -6,6 +6,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { env } from "../config/env.js";
 import { ensureStripeCustomer, getStripe, isStripeMock } from "../lib/stripe.js";
+import { broadcastTrip } from "../realtime/index.js";
 
 const CARD_LIKE = new Set(["card", "cashapp", "paypal"]);
 const OFFLINE = new Set(["cash", "venmo", "zelle"]);
@@ -30,6 +31,7 @@ async function markTripPaid(trip, { provider, paymentIntentId, paymentMethodType
     trip.requestedAt = trip.requestedAt || new Date();
   }
   await trip.save();
+  broadcastTrip(trip);
 
   await Payment.findOneAndUpdate(
     {
