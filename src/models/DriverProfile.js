@@ -133,6 +133,8 @@ const driverProfileSchema = new mongoose.Schema(
   { timestamps: true, minimize: false },
 );
 
+// Nearby-driver search (runs every few seconds per rider): online + approved + fresh GPS
+driverProfileSchema.index({ isOnline: 1, isApproved: 1, "lastLocation.updatedAt": -1 });
 driverProfileSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
     id: this._id.toString(),

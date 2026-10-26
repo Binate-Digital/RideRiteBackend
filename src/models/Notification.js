@@ -28,6 +28,8 @@ const notificationSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// Inbox / bell: a user's newest notifications
+notificationSchema.index({ userId: 1, createdAt: -1 });
 notificationSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
     id: this._id.toString(),

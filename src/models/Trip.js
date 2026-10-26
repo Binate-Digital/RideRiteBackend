@@ -132,6 +132,9 @@ const tripSchema = new mongoose.Schema(
 );
 
 tripSchema.index({ status: 1, vehicleType: 1, createdAt: -1 });
+// "My trips" lists for riders and drivers (newest first)
+tripSchema.index({ riderId: 1, createdAt: -1 });
+tripSchema.index({ driverId: 1, createdAt: -1 });
 // Sweeper: find offers whose window has passed
 tripSchema.index({ status: 1, offerExpiresAt: 1 });
 // Monthly bonus metrics: a driver's trips completed / cancelled in a month
