@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { DOCUMENT_UPLOAD_FIELDS, deleteDocument } from "../utils/privateDocuments.js";
+import { documentUrlPayload } from "./driver.controller.js";
 import { z } from "zod";
 import { User } from "../models/User.js";
 import { DriverProfile } from "../models/DriverProfile.js";
@@ -295,6 +297,17 @@ export const listDrivers = asyncHandler(async (req, res) => {
 });
 
 /** GET /api/admin/drivers/:userId — profile, documents, vehicle change, membership, earnings, bonuses, maintenance */
+/** GET /api/admin/drivers/:userId/documents/:field/url — short-lived link to view a document */
+export const getDriverDocumentUrl = asyncHandler(async (req, res) => {
+  const userId = requireObjectId(req.params.userId);
+  const profile = await DriverProfile.findOne({ userId });
+  if (!profile) throw httpError(404, "Driver not found");
+  const payload = await documentUrlPayload(profile, req.params.field, req);
+  await audit(req, "driver.document.view", "DriverProfile", profile._id, { userId: userId.toString(), field: payload.field });
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true, ...payload });
+});
+
 export const getDriver = asyncHandler(async (req, res) => {
   const userId = requireObjectId(req.params.userId);
   const [user, profile] = await Promise.all([User.findById(userId), DriverProfile.findOne({ userId })]);
@@ -621,6 +634,13 @@ export const gdprDelete = asyncHandler(async (req, res) => {
   const reason = String(req.body?.reason || "GDPR erasure request").trim().slice(0, 300);
   const originalEmail = user.email;
   const now = new Date();
+  // Private document files go too (S3 objects / local files; legacy external URLs can't be deleted)
+  const docProfile = await DriverProfile.findOne({ userId: id });
+  if (docProfile) {
+    for (const field of Object.values(DOCUMENT_UPLOAD_FIELDS)) {
+      if (docProfile[field]) await deleteDocument(docProfile[field]);
+    }
+  }
 
   await User.updateOne(
     { _id: id },

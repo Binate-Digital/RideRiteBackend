@@ -65,6 +65,84 @@ async function activateMock(user, plan) {
   return sub;
 }
 
+const MIN_TRIAL_SECONDS = 120;
+
+/**
+ * Renew a manual membership (no Stripe subscription behind it — mock, seeded or admin-made)
+ * without charging twice for the days already paid:
+ *  - mock: extend by one period from the current end (at most one period ahead), one charge
+ *  - Stripe: a subscription trialing until the current period end, so the first charge lands
+ *    exactly when the manual period ends; returns a SetupIntent secret to save the card.
+ *    The record keeps the manual period until the card is saved (see applyStripeSubscription).
+ */
+async function renewManual(req, res, current, plan) {
+  const now = new Date();
+  const end = new Date(current.currentPeriodEnd);
+  if (isStripeMock()) {
+    if (end.getTime() - now.getTime() > plan.intervalDays * 86400000) {
+      throw httpError(409, `Already renewed through ${end.toLocaleDateString("en-US")}`, { code: "ALREADY_RENEWED" });
+    }
+    const nextEnd = new Date(end.getTime() + plan.intervalDays * 86400000);
+    current.plan = plan.id;
+    current.amountCents = plan.amountCents;
+    current.currentPeriodEnd = nextEnd;
+    current.cancelAtPeriodEnd = false;
+    current.lastPaymentAt = now;
+    current.expiryNoticeFor = null;
+    await current.save();
+    await Payment.create({
+      userId: req.user._id,
+      purpose: "subscription",
+      refId: current._id,
+      amountCents: plan.amountCents,
+      status: "succeeded",
+      provider: "mock",
+      paymentMethodType: "card",
+      metadata: { plan: plan.id, renewal: "manual_extend" },
+    });
+    return res.json({
+      ok: true,
+      mode: "mock",
+      message: `Renewed — active until ${nextEnd.toLocaleDateString("en-US")} (test mode)`,
+      subscription: current.toSafeJSON(),
+    });
+  }
+
+  const stripe = getStripe();
+  const customerId = await ensureStripeCustomer(req.user);
+  if (current.pendingStripeSubscriptionId) {
+    await stripe.subscriptions.cancel(current.pendingStripeSubscriptionId).catch(() => {});
+  }
+  const stripeSub = await stripe.subscriptions.create({
+    customer: customerId,
+    items: [{ price: await priceIdForPlan(plan.id) }],
+    trial_end: Math.floor(end.getTime() / 1000),
+    payment_behavior: "default_incomplete",
+    payment_settings: { save_default_payment_method: "on_subscription", payment_method_types: ["card"] },
+    // Never left running without a card: Stripe cancels it at trial end if setup was abandoned
+    trial_settings: { end_behavior: { missing_payment_method: "cancel" } },
+    expand: ["pending_setup_intent"],
+    metadata: { userId: req.user._id.toString(), plan: plan.id, purpose: "subscription", app: "riderite", renews: "manual" },
+  });
+  current.pendingStripeSubscriptionId = stripeSub.id;
+  await current.save();
+  const clientSecret = stripeSub.pending_setup_intent?.client_secret || null;
+  if (!clientSecret) {
+    // Stripe already had a card to use: nothing for the driver to confirm
+    const sub = (await applyStripeSubscription(stripeSub)) || current;
+    return res.json({ ok: true, mode: "stripe", message: "Auto-renew is on", subscription: sub.toSafeJSON() });
+  }
+  res.status(201).json({
+    ok: true,
+    mode: "stripe",
+    intent: "setup",
+    clientSecret,
+    amountCents: plan.amountCents,
+    firstChargeAt: end,
+    subscription: current.toSafeJSON(),
+  });
+}
+
 /** Client secret of the payment for a subscription's first invoice (API-version tolerant). */
 function invoiceClientSecret(invoice) {
   if (!invoice || typeof invoice === "string") return null;
@@ -85,8 +163,16 @@ export const subscribe = asyncHandler(async (req, res) => {
   if (!plan) throw httpError(400, "plan must be monthly or weekly");
 
   const current = await DriverSubscription.findOne({ userId: req.user._id });
-  if (current?.isActiveNow() && !current.cancelAtPeriodEnd) {
-    throw httpError(409, "Your membership is already active", { code: "ALREADY_ACTIVE" });
+  // Manual membership still running: renew from its end (time left enough to trial)
+  if (
+    current?.isActiveNow() &&
+    !current.stripeSubscriptionId &&
+    new Date(current.currentPeriodEnd).getTime() - Date.now() > MIN_TRIAL_SECONDS * 1000
+  ) {
+    return renewManual(req, res, current, plan);
+  }
+  if (current?.isActiveNow() && current.stripeSubscriptionId && !current.cancelAtPeriodEnd) {
+    throw httpError(409, "Your membership is already active and renews automatically", { code: "ALREADY_ACTIVE" });
   }
 
   if (isStripeMock()) {
@@ -164,6 +250,21 @@ export const activate = subscribe;
 export const sync = asyncHandler(async (req, res) => {
   const current = await DriverSubscription.findOne({ userId: req.user._id });
   if (!current) throw httpError(404, "No subscription found");
+  if (!isStripeMock() && current.pendingStripeSubscriptionId) {
+    const stripe = getStripe();
+    let pending = await stripe.subscriptions.retrieve(current.pendingStripeSubscriptionId, {
+      expand: ["pending_setup_intent"],
+    });
+    const si = pending.pending_setup_intent;
+    // The saved card normally becomes the default already; make sure before adopting
+    if (!pending.default_payment_method && si && typeof si === "object" && si.status === "succeeded" && si.payment_method) {
+      pending = await stripe.subscriptions.update(pending.id, {
+        default_payment_method: typeof si.payment_method === "string" ? si.payment_method : si.payment_method.id,
+      });
+    }
+    const sub = (await applyStripeSubscription(pending)) || current;
+    return res.json({ ok: true, subscription: sub.toSafeJSON() });
+  }
   if (isStripeMock() || !current.stripeSubscriptionId) {
     return res.json({ ok: true, subscription: current.toSafeJSON() });
   }
@@ -193,7 +294,11 @@ export const cancel = asyncHandler(async (req, res) => {
     const saved = await applyStripeSubscription(updated);
     return res.json({ ok: true, subscription: saved.toSafeJSON() });
   }
-  // Mock mode / DB-only (seeded QA) memberships
+  // Mock mode / DB-only (seeded QA) memberships: an auto-renew being set up is dropped too
+  if (!isStripeMock() && sub.pendingStripeSubscriptionId) {
+    await getStripe().subscriptions.cancel(sub.pendingStripeSubscriptionId).catch(() => {});
+    sub.pendingStripeSubscriptionId = null;
+  }
   sub.cancelAtPeriodEnd = true;
   await sub.save();
   res.json({ ok: true, subscription: sub.toSafeJSON() });

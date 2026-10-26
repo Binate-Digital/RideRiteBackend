@@ -47,7 +47,7 @@ function scheduleOfferTimeout(trip) {
   offerTimers.set(String(trip._id), timer);
 }
 
-/** The trip is visible to drivers: pay-on-pickup, or card already captured. */
+/** The trip is visible to drivers: pay-on-drop-off, or card already captured. */
 function readyForDrivers(trip) {
   return trip.paid || OFFLINE_PAY.includes(trip.paymentMethod);
 }

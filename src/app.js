@@ -21,6 +21,7 @@ import publicRoutes from "./routes/public.routes.js";
 import telephonyRoutes from "./routes/telephony.routes.js";
 import { stripeWebhook } from "./controllers/payments.controller.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
+import { serveSignedLocalDocument } from "./utils/privateDocuments.js";
 import { requestMetrics } from "./middleware/metrics.js";
 
 export function createApp() {
@@ -78,8 +79,13 @@ export function createApp() {
     });
   });
 
-  // Local-dev uploaded files (when UPLOAD_API_TOKEN is empty)
+  // Driver documents are private: the old public folder is no longer served (legacy files there
+  // are read through signed links, see utils/privateDocuments.js)
+  app.use("/uploads/documents", (_req, res) => res.status(404).json({ ok: false, error: "Not found" }));
+  // Local-dev uploaded files (when UPLOAD_API_TOKEN is empty): avatars and listing photos
   app.use("/uploads", express.static(localUploadRoot));
+  // Short-lived signed links to privately stored documents (local storage fallback)
+  app.get("/api/documents/file", serveSignedLocalDocument);
 
   app.use("/api/auth", authRoutes);
   app.use("/api/rides", ridesRoutes);

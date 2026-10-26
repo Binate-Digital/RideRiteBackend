@@ -117,6 +117,7 @@ export async function confirmChauffeurPaid(bookingId, { paymentIntentId, provide
       title: "Private driver booked",
       body: `${new Date(booking.startAt).toLocaleString("en-US")} · ${booking.durationHours}h — we'll tell you when a driver is assigned.`,
       data: { chauffeurBookingId: booking._id.toString(), href: "/chauffeur" },
+      sms: true,
     });
   } catch {
     /* non-fatal */
@@ -149,6 +150,7 @@ export async function failChauffeurPayment(bookingId, paymentIntentId) {
       body: `Your card was declined for ${money(booking.totalCents)}. Book again to retry.`,
       data: { chauffeurBookingId: booking._id.toString(), href: "/chauffeur" },
       email: true,
+      sms: true,
     });
   }
   return booking;

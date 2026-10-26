@@ -7,7 +7,8 @@ import mongoose from "mongoose";
  * trip:             grossCents = trip base fare (meter + booking fee, excluding the platform
  *                   service fee and tax), commissionCents = PLATFORM_COMMISSION_RATE of it,
  *                   netCents = gross − commission.
- * cancellation_fee: the rider's late-cancel fee, credited to the driver in full.
+ * cancellation_fee: legacy — a rider's late-cancel fee credited to the driver before those fees
+ *                   became platform revenue. No new entries are created; old ones stay valid.
  * rental:           a peer-to-peer listing owner's share (subtotal − RENTAL_COMMISSION_RATE).
  * chauffeur:        the assigned private driver's share of a completed chauffeur booking
  *                   (total − CHAUFFEUR_COMMISSION_RATE).

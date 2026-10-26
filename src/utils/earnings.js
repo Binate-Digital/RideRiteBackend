@@ -32,7 +32,7 @@ async function insertOnce(doc) {
 }
 
 /**
- * Completed trip → ledger. Card trips are owed to the driver (pending payout). Pay-on-pickup
+ * Completed trip → ledger. Card trips are owed to the driver (pending payout). Pay-on-drop-off
  * trips: the driver already holds the whole fare, so the trip entry is `collected` and a
  * deduction of (fare − net) is what they owe back, netted against their next payout.
  */
@@ -69,19 +69,8 @@ export async function recordTripEarning(trip) {
   return entry;
 }
 
-/** Late-cancel fee goes to the driver in full (TRD 4.7: fees compensate drivers). */
-export async function recordCancellationFeeEarning(trip, feeCents) {
-  if (!trip?.driverId || !(feeCents > 0)) return null;
-  return insertOnce({
-    driverId: trip.driverId,
-    type: "cancellation_fee",
-    tripId: trip._id,
-    grossCents: feeCents,
-    commissionCents: 0,
-    netCents: feeCents,
-    description: "Rider cancelled after you were en route",
-  });
-}
+// Ride late-cancel fees are platform revenue (Trip.cancelFeeRecipient = "platform"); the
+// `cancellation_fee` earning type remains only for entries credited before that change.
 
 /** Peer-to-peer rental paid → owner's share is owed to them (fleet rentals: platform revenue). */
 export async function recordRentalOwnerEarning(booking) {

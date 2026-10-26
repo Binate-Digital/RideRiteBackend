@@ -40,7 +40,13 @@ const optionalDataUrl = z
     return s;
   });
 
+/** Signup consent checkbox — "I agree to the Terms and Privacy Policy" */
+const acceptTerms = z.literal(true, {
+  errorMap: () => ({ message: "You must agree to the Terms and Privacy Policy" }),
+});
+
 export const signupSchema = z.object({
+  acceptTerms,
   fullName: z.string().trim().min(2).max(80),
   email: z.string().trim().email().max(254),
   password: z.string().min(8).max(72),
@@ -69,6 +75,7 @@ export const phoneStartSchema = z.object({
 });
 
 export const phoneSignupSchema = z.object({
+  acceptTerms,
   fullName: z.string().trim().min(2).max(80),
   phone: usPhone,
   otp: smsCode,
@@ -89,9 +96,11 @@ export const phoneResetSchema = z.object({
 
 export const socialLoginSchema = z.object({
   idToken: z.string().min(20).max(8192),
-  /** Apple passes the name to the browser once (first sign-in) — not in the token */
+  /** Optional display name override for a new account (else the token's name) */
   fullName: z.string().trim().max(80).optional(),
   role: z.enum(["rider", "driver"]).optional().default("rider"),
+  /** Required only when this sign-in would create a new account */
+  acceptTerms: z.boolean().optional(),
 });
 
 /** Prefer email + 6-digit OTP; legacy long token still accepted. */

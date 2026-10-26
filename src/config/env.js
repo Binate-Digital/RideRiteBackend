@@ -108,13 +108,10 @@ export const env = {
     secure: String(process.env.SMTP_SECURE || "").toLowerCase() === "true",
   },
 
-  /** Social sign-in. Unset → that provider's endpoint answers "not configured". */
+  /** Google sign-in (the only social provider). Unset → the endpoint answers "not configured". */
   googleClientIds: list(process.env.GOOGLE_CLIENT_ID),
-  /** Apple Services ID (web) — comma-separate to also accept an app bundle id. */
-  appleClientIds: list(process.env.APPLE_CLIENT_ID),
-  /** Test-only overrides (NODE_ENV=test) so smoke tests can sign tokens with their own keys. */
+  /** Test-only override (NODE_ENV=test) so smoke tests can sign tokens with their own keys. */
   googleCertsUrl: testOnly(process.env.GOOGLE_CERTS_URL),
-  appleJwksUrl: testOnly(process.env.APPLE_JWKS_URL) || "https://appleid.apple.com/auth/keys",
 
   /** Twilio (Verify for SMS OTP; Voice for masked calls). Unset → dev fallbacks. */
   twilio: {
@@ -123,7 +120,12 @@ export const env = {
     verifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID || "",
     /** Pool of Twilio numbers (E.164, comma-separated) that bridge rider ↔ driver calls. */
     proxyNumbers: list(process.env.TWILIO_PROXY_NUMBERS),
+    /** SMS notifications (Programmable Messaging): a Messaging Service SID, else a From number. */
+    messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID || "",
+    smsFrom: process.env.TWILIO_SMS_FROM || "",
   },
+  /** SMS notifications per user per hour (on top of category / channel prefs). */
+  smsNotifyMaxPerHour: Math.max(1, Number(process.env.SMS_NOTIFY_MAX_PER_HOUR) || 10),
   /** Dev SMS code used when Twilio Verify is not configured (logged to the console, never returned). */
   staticSmsOtp: String(process.env.STATIC_SMS_OTP || "123456"),
   /** SMS OTP limits: per phone number, on top of the per-IP route limiter. */
@@ -187,6 +189,35 @@ export const env = {
   rentalOwnerDeclineHours: nonNeg(process.env.RENTAL_OWNER_DECLINE_HOURS, 12),
   /** An active listing whose daily price changes by more than this % goes back to admin review. */
   rentalPriceReviewPercent: nonNeg(process.env.RENTAL_PRICE_REVIEW_CHANGE_PERCENT, 50),
+
+  /**
+   * Driver location privacy. Nearby-driver pins are snapped to a grid of this many meters and
+   * rate-limited per signed-in user; shared trip links stop working this long after the trip
+   * ends (and at most TRIP_SHARE_MAX_HOURS after they were created).
+   */
+  nearbyGridMeters: Math.max(10, Number(process.env.NEARBY_GRID_METERS) || 120),
+  nearbyRateLimitPerMinute: Math.max(1, Number(process.env.NEARBY_RATE_LIMIT_PER_MINUTE) || 30),
+  tripShareGraceMinutes: nonNeg(process.env.TRIP_SHARE_GRACE_MINUTES, 60),
+  tripShareMaxHours: Math.max(1, Number(process.env.TRIP_SHARE_MAX_HOURS) || 24),
+
+  /**
+   * Private driver documents (license, registration, insurance). All four S3_* set → private
+   * S3 objects + presigned GET URLs; otherwise private local disk (PRIVATE_UPLOAD_DIR) served
+   * only through short-lived signed links. Never the public upload service.
+   */
+  s3: {
+    bucket: process.env.S3_BUCKET || "",
+    region: process.env.S3_REGION || "",
+    accessKeyId: process.env.S3_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
+    /** S3-compatible storage (MinIO, R2, Spaces…): endpoint URL, path-style addressing */
+    endpoint: process.env.S3_ENDPOINT || "",
+    documentsPrefix: (process.env.S3_DOCUMENTS_PREFIX || "driver-documents/").replace(/^\/+/, ""),
+    signedUrlTtlSeconds: Math.min(3600, Math.max(30, Number(process.env.S3_SIGNED_URL_TTL_SECONDS) || 300)),
+  },
+  privateUploadDir: process.env.PRIVATE_UPLOAD_DIR || "",
+  /** Max size of one driver document (MB). */
+  documentMaxMb: Math.max(1, Number(process.env.DOCUMENT_MAX_MB) || 10),
 
   /** Web push (VAPID). Unset → push is disabled and the web app hides the toggle. */
   vapid: {

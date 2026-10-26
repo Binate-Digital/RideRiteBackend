@@ -69,4 +69,14 @@ rentalListingSchema.methods.toSafeJSON = function toSafeJSON() {
   };
 };
 
+/**
+ * Browse view (public, no auth): no owner id, plate or review internals, and a peer owner's car
+ * location rounded to ~1 km (it is often their home). Exact details come with a booking.
+ */
+rentalListingSchema.methods.toPublicJSON = function toPublicJSON() {
+  const { ownerId: _o, plate: _p, approvedDailyRateCents: _a, reviewReason: _r, ...rest } = this.toSafeJSON();
+  const coarse = (n) => (n == null || this.source !== "peer" ? n : Math.round(n * 100) / 100);
+  return { ...rest, lat: coarse(this.lat), lng: coarse(this.lng) };
+};
+
 export const RentalListing = mongoose.model("RentalListing", rentalListingSchema);

@@ -18,9 +18,11 @@ import { DriverSubscription } from "../models/DriverSubscription.js";
  *  chauffeurCommissionCents  commission on completed chauffeur bookings (ledger)
  *  subscriptionRevenueCents  driver membership payments, net of their refunds
  *  bookingCancelRetainedCents  paid rental / chauffeur bookings cancelled late: paid − refunded
+ *  rideCancelFeePlatformCents  ride late-cancel fees kept by the platform (Trip.cancelFeeRecipient)
  *  platformRevenueCents      sum of the above (commission − discounts + fees + subscriptions)
  *
- *  rideCancelFeeCents        rider late-cancel fees (collected, passed to drivers in full)
+ *  rideCancelFeeCents        all ride late-cancel fees collected from riders
+ *  rideCancelFeeDriverCents  of which credited to drivers (legacy, before fees became platform revenue)
  *  collectedCents            every succeeded online payment (rides, rentals, chauffeur, memberships)
  *  refundedCents             refunds issued in the period
  *  payablePendingCents       driver earnings owed and not yet paid out (now, not ranged)
@@ -46,7 +48,7 @@ export async function revenueSummary({ from = null, to = null } = {}) {
     chauffeurCommissionCents,
     rentals,
     subscriptionRevenueCents,
-    rideCancelFeeCents,
+    rideCancelFees,
     bookingCancelRetainedCents,
     collectedCents,
     refundedCents,
@@ -84,7 +86,15 @@ export async function revenueSummary({ from = null, to = null } = {}) {
       { purpose: "subscription", status: { $in: PAID_STATUSES }, ...range("createdAt", from, to) },
       { $subtract: ["$amountCents", { $ifNull: ["$refundedCents", 0] }] },
     ),
-    sum(Trip, { status: "cancelled", cancelFeeCents: { $gt: 0 }, ...range("cancelledAt", from, to) }, "$cancelFeeCents"),
+    Trip.aggregate([
+      { $match: { status: "cancelled", cancelFeeCents: { $gt: 0 }, ...range("cancelledAt", from, to) } },
+      {
+        $group: {
+          _id: { $cond: [{ $eq: ["$cancelFeeRecipient", "platform"] }, "platform", "driver"] },
+          total: { $sum: "$cancelFeeCents" },
+        },
+      },
+    ]),
     Promise.all(
       [RentalBooking, ChauffeurBooking].map((M) =>
         sum(
@@ -135,7 +145,9 @@ export async function revenueSummary({ from = null, to = null } = {}) {
     chauffeurCommissionCents,
     subscriptionRevenueCents,
     bookingCancelRetainedCents,
-    rideCancelFeeCents,
+    rideCancelFeeCents: rideCancelFees.reduce((a, r) => a + r.total, 0),
+    rideCancelFeePlatformCents: rideCancelFees.find((r) => r._id === "platform")?.total ?? 0,
+    rideCancelFeeDriverCents: rideCancelFees.find((r) => r._id === "driver")?.total ?? 0,
     collectedCents,
     refundedCents,
     payablePendingCents: pending.total ?? 0,
@@ -151,7 +163,8 @@ export async function revenueSummary({ from = null, to = null } = {}) {
     out.fleetRevenueCents +
     out.chauffeurCommissionCents +
     out.subscriptionRevenueCents +
-    out.bookingCancelRetainedCents;
+    out.bookingCancelRetainedCents +
+    out.rideCancelFeePlatformCents;
   return out;
 }
 

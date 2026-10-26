@@ -107,7 +107,7 @@ export const createRidePaymentIntent = asyncHandler(async (req, res) => {
   if (OFFLINE.has(trip.paymentMethod)) {
     throw httpError(
       400,
-      `Trip payment method is "${trip.paymentMethod}" (pay on pickup). No card intent needed.`,
+      `Trip payment method is "${trip.paymentMethod}" (pay on drop-off). No card intent needed.`,
     );
   }
 
@@ -462,6 +462,7 @@ async function onIntentFailed(pi) {
         category: "payment",
         title: "Payment failed",
         body: `Your card was declined for $${(failed.fareCents / 100).toFixed(2)}. Try another card to request the ride.`,
+        sms: true,
         data: { tripId: failed._id.toString(), href: `/book?trip_id=${failed._id}` },
         email: true,
       });

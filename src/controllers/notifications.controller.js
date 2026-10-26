@@ -7,6 +7,7 @@ import { env } from "../config/env.js";
 import { PushSubscription } from "../models/PushSubscription.js";
 import { notificationEmail, sendMail } from "../utils/mailer.js";
 import { pushConfigured, sendPushToUser } from "../utils/webPush.js";
+import { SMS_CATEGORIES, sendSmsNotification, smsAllowed, smsNotifyProvider } from "../utils/smsNotify.js";
 
 /** GET /api/notifications */
 export const list = asyncHandler(async (req, res) => {
@@ -59,14 +60,32 @@ function prefsPayload(user) {
     channels: {
       email: user?.notificationChannels?.email !== false,
       push: user?.notificationChannels?.push !== false,
+      sms: user?.notificationChannels?.sms !== false,
     },
+    /** SMS per category (only these categories can text) */
+    sms: Object.fromEntries(SMS_CATEGORIES.map((c) => [c, user?.smsPrefs?.[c] !== false])),
   };
 }
 
-/** GET/PATCH /api/notifications/prefs — categories + delivery channels ({ channels: { email, push } }) */
+const PREFS_SELECT = "notificationPrefs notificationChannels smsPrefs phoneE164 isPhoneVerified";
+const smsInfo = (user) => ({
+  provider: smsNotifyProvider(),
+  /** Texts need a verified phone number on the account */
+  phoneVerified: Boolean(user?.isPhoneVerified && user?.phoneE164),
+});
+
+/**
+ * GET/PATCH /api/notifications/prefs — categories, delivery channels
+ * ({ channels: { email, push, sms } }) and per-category SMS ({ sms: { ride, … } }).
+ */
 export const getPrefs = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id).select("notificationPrefs notificationChannels");
-  res.json({ ok: true, prefs: prefsPayload(user), push: { enabled: pushConfigured(), publicKey: env.vapid.publicKey || null } });
+  const user = await User.findById(req.user._id).select(PREFS_SELECT);
+  res.json({
+    ok: true,
+    prefs: prefsPayload(user),
+    push: { enabled: pushConfigured(), publicKey: env.vapid.publicKey || null },
+    sms: smsInfo(user),
+  });
 });
 
 export const updatePrefs = asyncHandler(async (req, res) => {
@@ -74,13 +93,14 @@ export const updatePrefs = asyncHandler(async (req, res) => {
   for (const key of CATEGORY_KEYS) {
     if (typeof req.body?.[key] === "boolean") next[`notificationPrefs.${key}`] = req.body[key];
   }
-  for (const ch of ["email", "push"]) {
+  for (const ch of ["email", "push", "sms"]) {
     if (typeof req.body?.channels?.[ch] === "boolean") next[`notificationChannels.${ch}`] = req.body.channels[ch];
   }
-  const user = await User.findByIdAndUpdate(req.user._id, { $set: next }, { new: true }).select(
-    "notificationPrefs notificationChannels",
-  );
-  res.json({ ok: true, prefs: prefsPayload(user) });
+  for (const key of SMS_CATEGORIES) {
+    if (typeof req.body?.sms?.[key] === "boolean") next[`smsPrefs.${key}`] = req.body.sms[key];
+  }
+  const user = await User.findByIdAndUpdate(req.user._id, { $set: next }, { new: true }).select(PREFS_SELECT);
+  res.json({ ok: true, prefs: prefsPayload(user), sms: smsInfo(user) });
 });
 
 /** GET /api/notifications/push/config — VAPID public key for PushManager.subscribe */
@@ -140,11 +160,15 @@ export async function emailUser(userId, category, mail) {
  *             ready { subject, text, html } (e.g. a receipt); skipped if the email channel is off
  *   push    — Web Push to the user's subscribed browsers (default on; `push: false` skips),
  *             skipped if the push channel is off or VAPID is not configured
+ *   sms     — when `sms` is set (high-value events only): a text to a verified phone, if the
+ *             SMS channel and that category's SMS toggle are on (utils/smsNotify.js)
  * A category switched off suppresses every channel. Never throws.
  */
-export async function notifyUser(userId, { category, title, body, data = {}, email = false, push = true }) {
+export async function notifyUser(userId, { category, title, body, data = {}, email = false, push = true, sms = false }) {
   try {
-    const user = await User.findById(userId).select("fullName email notificationPrefs notificationChannels");
+    const user = await User.findById(userId).select(
+      "fullName email notificationPrefs notificationChannels smsPrefs phoneE164 isPhoneVerified",
+    );
     const prefs = user?.notificationPrefs || {};
     if (prefs[category] === false) return null;
     const row = await Notification.create({ userId, category, title, body, data });
@@ -166,6 +190,9 @@ export async function notifyUser(userId, { category, title, body, data = {}, ema
         tag: data?.tripId || data?.rentalBookingId || data?.chauffeurBookingId || row._id.toString(),
         category,
       }).catch(() => {});
+    }
+    if (sms && smsAllowed(user, category)) {
+      await sendSmsNotification(user, { category, title, body, href: data?.href });
     }
     return row;
   } catch {

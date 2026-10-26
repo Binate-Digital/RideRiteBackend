@@ -21,7 +21,8 @@ import {
 } from "../validators/auth.schemas.js";
 import { e164ToDisplay, toE164 } from "../utils/phone.js";
 import { checkOtp, sendOtp, smsProvider } from "../utils/sms.js";
-import { socialProviders, verifyAppleIdToken, verifyGoogleIdToken } from "../utils/socialAuth.js";
+import { socialProviders, verifyGoogleIdToken } from "../utils/socialAuth.js";
+import { termsConsentFields } from "../utils/legal.js";
 import {
   createOpaqueToken,
   hashToken,
@@ -93,6 +94,7 @@ export const signup = asyncHandler(async (req, res) => {
   const otp = issueEmailOtp();
 
   const user = await User.create({
+    ...(await termsConsentFields()),
     fullName: data.fullName,
     email,
     phone: data.phone || null,
@@ -420,18 +422,18 @@ async function createAccount(fields, role) {
 }
 
 /**
- * POST /api/auth/social/:provider (google | apple) — body: { idToken, fullName?, role? }
- * Verifies the provider's ID token, then signs in the linked account; otherwise links an
- * existing account with the same verified email, otherwise creates one (email verified).
+ * POST /api/auth/social/google — body: { idToken, fullName?, role?, acceptTerms? }
+ * Verifies the Google ID token, then signs in the linked account; otherwise links an existing
+ * account with the same *verified* email, otherwise creates one (email verified) — creating
+ * needs acceptTerms: true (else 409 TERMS_REQUIRED, so the client can ask and retry).
  */
 export const socialLogin = asyncHandler(async (req, res) => {
   const provider = String(req.params.provider || "").toLowerCase();
-  if (!["google", "apple"].includes(provider)) throw httpError(404, "Unknown social provider");
+  if (provider !== "google") throw httpError(404, "Unknown social provider");
   const data = socialLoginSchema.parse(req.body || {});
-  const identity =
-    provider === "google" ? await verifyGoogleIdToken(data.idToken) : await verifyAppleIdToken(data.idToken);
-  const idField = provider === "google" ? "googleId" : "appleId";
-  const select = "+refreshTokens +googleId +appleId";
+  const identity = await verifyGoogleIdToken(data.idToken);
+  const idField = "googleId";
+  const select = "+refreshTokens +googleId";
 
   let user = await User.findOne({ [idField]: identity.subject }).select(select);
   let created = false;
@@ -444,10 +446,18 @@ export const socialLogin = asyncHandler(async (req, res) => {
     }
   }
   if (!user) {
-    if (!identity.email && provider === "google") throw httpError(400, "Your Google account has no email address");
+    if (!identity.email) throw httpError(400, "Your Google account has no email address");
+    // Only a Google-verified address may link; an unverified one can't take over (or clash with) an account
+    if (await User.exists({ email: identity.email })) {
+      throw httpError(409, "An account with this email already exists — sign in with your password", { code: "EMAIL_TAKEN" });
+    }
+    if (data.acceptTerms !== true) {
+      throw httpError(409, "Agree to the Terms and Privacy Policy to create your account", { code: "TERMS_REQUIRED" });
+    }
     const name = (data.fullName || identity.name || identity.email?.split("@")[0] || "").trim().slice(0, 80);
     const created_ = await createAccount(
       {
+        ...(await termsConsentFields()),
         fullName: name.length >= 2 ? name : "RideRite rider",
         ...(identity.email ? { email: identity.email } : {}),
         isEmailVerified: Boolean(identity.email && identity.emailVerified),
@@ -459,7 +469,7 @@ export const socialLogin = asyncHandler(async (req, res) => {
     created = true;
   }
   if (!user.isActive) throw httpError(403, "Account is suspended");
-  // An Apple account may have no (verified) email — the provider identity verifies it
+  // Google vouches for the account (a linked or new email is verified)
   if (!user.isVerified()) user.isEmailVerified = true;
 
   const tokens = await issueSession(user, req);
@@ -503,6 +513,7 @@ export const phoneSignup = asyncHandler(async (req, res) => {
   await checkOtp(phoneE164, "signup", data.otp);
   const created = await createAccount(
     {
+      ...(await termsConsentFields()),
       fullName: data.fullName,
       phone: e164ToDisplay(phoneE164),
       phoneE164,

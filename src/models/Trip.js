@@ -93,6 +93,17 @@ const tripSchema = new mongoose.Schema(
     },
     // Cancel metadata
     cancelFeeCents: { type: Number, default: 0 },
+    /** Shared live-tracking links: SHA-256 of each token (utils/locationPrivacy.js) */
+    shareTokens: {
+      type: [{ hash: String, createdAt: Date, _id: false }],
+      default: [],
+      select: false,
+    },
+    /**
+     * Who keeps the late-cancel fee: "platform" (current rule — platform revenue) or, for trips
+     * cancelled before that change (null), the driver (a `cancellation_fee` earning exists).
+     */
+    cancelFeeRecipient: { type: String, enum: ["platform", "driver", null], default: null },
     refundCents: { type: Number, default: 0 },
     cancelledAt: { type: Date, default: null },
     cancelReason: { type: String, default: null },

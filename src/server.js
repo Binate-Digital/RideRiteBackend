@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createApp } from "./app.js";
 import { connectDb } from "./config/db.js";
+import { ensureLegalPages } from "./utils/legal.js";
 import { env } from "./config/env.js";
 import { initRealtime } from "./realtime/index.js";
 import { startDispatchSweeper } from "./utils/dispatch.js";
@@ -11,6 +12,8 @@ import { loadSettings, startSettingsRefresh } from "./utils/settings.js";
 
 async function main() {
   await connectDb();
+  // Legal pages: seed the placeholder Terms / Privacy / Refund policy / EULA once
+  await ensureLegalPages().catch((err) => console.error("[legal] seed failed:", err.message));
   // Admin-edited fares, fees and commissions (defaults to env when none are saved)
   await loadSettings();
   startSettingsRefresh();

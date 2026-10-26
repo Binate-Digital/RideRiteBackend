@@ -6,7 +6,7 @@ import {
   uploadAvatarSingle,
   uploadSingle,
   uploadMultiple,
-  uploadFields,
+  uploadPrivateDocuments,
   uploadPhotos,
 } from "../middleware/upload.middleware.js";
 import * as uploads from "../controllers/uploads.controller.js";
@@ -34,11 +34,12 @@ router.post("/files", uploadMultiple("files", 10), uploads.uploadFiles);
 
 /**
  * Driver documents (image or PDF): `licenseFront`, `licenseBack`, `registrationDoc`,
- * `insuranceDoc`. Returns URLs; PATCH /api/driver/verification saves them with expiry dates.
+ * `insuranceDoc`. Stored privately; returns opaque refs that PATCH /api/driver/verification
+ * saves with expiry dates.
  */
 router.post(
   "/driver-docs",
-  uploadFields([
+  uploadPrivateDocuments([
     { name: "licenseFront", maxCount: 1 },
     { name: "licenseBack", maxCount: 1 },
     { name: "registrationDoc", maxCount: 1 },

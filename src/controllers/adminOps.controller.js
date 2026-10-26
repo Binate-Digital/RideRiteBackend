@@ -234,7 +234,7 @@ export const listDisputes = asyncHandler(async (req, res) => {
   const paging = parsePaging(req);
   const [total, rows] = await Promise.all([
     Dispute.countDocuments(filter),
-    Dispute.find(filter).sort({ status: 1, createdAt: -1 }).skip(paging.skip).limit(paging.limit),
+    Dispute.find(filter).sort({ status: 1, priority: -1, createdAt: -1 }).skip(paging.skip).limit(paging.limit),
   ]);
   const people = await usersById(rows.flatMap((d) => [d.riderId, d.driverId, d.assignedTo]));
   const trips = new Map(
@@ -296,6 +296,7 @@ export const updateDispute = asyncHandler(async (req, res) => {
   if (resolving) {
     if (!dispute.resolutionNotes) throw httpError(400, "Add resolution notes before resolving");
     if (data.refundCents > 0) {
+      if (!dispute.tripId) throw httpError(400, "This complaint isn't linked to a trip — there is nothing to refund");
       if (!hasPermission(req.user, "trips:refund")) throw httpError(403, "Your admin role can't issue refunds (needs trips:refund)", { code: "FORBIDDEN_PERMISSION" });
       const trip = await Trip.findById(dispute.tripId);
       const out = await refundTripCore(trip, data.refundCents, `dispute ${dispute._id}`);
@@ -323,19 +324,29 @@ export const updateDispute = asyncHandler(async (req, res) => {
   }
   await dispute.save();
   await audit(req, resolving ? "dispute.resolve" : "dispute.update", "Dispute", dispute._id, {
-    tripId: dispute.tripId.toString(),
+    tripId: dispute.tripId ? dispute.tripId.toString() : null,
+    source: dispute.source || "trip",
     from,
     to: dispute.status,
     refundCents: refund?.amountCents || 0,
     driverNote: Boolean(dispute.driverNote),
   });
 
-  if (resolving) {
+  if (resolving && !dispute.riderId && dispute.contact?.email) {
+    // Public complaint from someone without (or not signed in to) an account: reply by email
+    const { sendMail } = await import("../utils/mailer.js");
+    await sendMail({
+      to: dispute.contact.email,
+      subject: "We've reviewed your RideRite complaint",
+      text: `Hi ${dispute.contact.name || "there"},\n\n${dispute.resolutionNotes}\n\nRideRite Safety Team`,
+    }).catch(() => {});
+  }
+  if (resolving && dispute.riderId) {
     await notifyUser(dispute.riderId, {
       category: "ride",
       title: "We've reviewed your report",
       body: `${dispute.resolutionNotes}${refund ? ` A refund of ${money(refund.amountCents)} is on its way to your card.` : ""}`.slice(0, 500),
-      data: { tripId: dispute.tripId.toString(), disputeId: dispute._id.toString(), href: "/trips" },
+      data: { tripId: dispute.tripId ? dispute.tripId.toString() : null, disputeId: dispute._id.toString(), href: "/trips" },
       email: true,
     });
     if (dispute.driverId && dispute.driverNote) {
@@ -343,7 +354,7 @@ export const updateDispute = asyncHandler(async (req, res) => {
         category: "system",
         title: "A note from RideRite about a recent trip",
         body: dispute.driverNote.slice(0, 500),
-        data: { tripId: dispute.tripId.toString(), href: "/driver" },
+        data: { tripId: dispute.tripId ? dispute.tripId.toString() : null, href: "/driver" },
         email: true,
       });
     }

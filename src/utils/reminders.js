@@ -70,6 +70,8 @@ export async function sweepReminders(now = new Date()) {
           body: `${when(b.startAt)} · ${b.durationHours}h from ${b.pickupAddress}${b.driverId ? "" : " — we're still finding your driver."}`,
           data: { chauffeurBookingId: b._id.toString(), href: "/chauffeur", reminder: riderLead },
           email: true,
+          // Text the last reminder (1 h) only
+          sms: riderLead <= 60,
         });
       }
       if (b.driverId) {
@@ -82,6 +84,7 @@ export async function sweepReminders(now = new Date()) {
             body: `${when(b.startAt)} · ${b.durationHours}h · pick up at ${b.pickupAddress}`,
             data: { chauffeurBookingId: b._id.toString(), href: "/driver", reminder: driverLead },
             email: true,
+            sms: driverLead <= 60,
           });
         }
       }

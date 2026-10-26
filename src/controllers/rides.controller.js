@@ -2,6 +2,7 @@ import { Trip } from "../models/Trip.js";
 import { DriverProfile } from "../models/DriverProfile.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
+import { addShareToken, TRIP_ENDED } from "../utils/locationPrivacy.js";
 import { buildEstimate, riderCancellationFee } from "../utils/fares.js";
 import {
   estimateSchema,
@@ -26,7 +27,7 @@ import {
 } from "../utils/dispatch.js";
 import { tripWithDriver, tripsWithDrivers } from "../utils/tripDrivers.js";
 import { settleTripRefund } from "../utils/refunds.js";
-import { recordCancellationFeeEarning, recordTripEarning } from "../utils/earnings.js";
+import { recordTripEarning } from "../utils/earnings.js";
 import { rideReceiptEmail } from "../utils/mailer.js";
 import { User } from "../models/User.js";
 import { Dispute, DISPUTE_CATEGORIES } from "../models/Dispute.js";
@@ -138,7 +139,7 @@ export const book = asyncHandler(async (req, res) => {
     throw httpError(400, "Promo limit reached", { code: "PROMO_INVALID" });
   }
   // Card-like: hold as pending_payment until Stripe succeeds, then flip to requested for drivers.
-  // Offline: go straight to requested (pay on pickup).
+  // Offline: go straight to requested (pay the driver at drop-off).
   const trip = await Trip.create({
     riderId: req.user._id,
     status: isOffline ? "requested" : "pending_payment",
@@ -165,7 +166,7 @@ export const book = asyncHandler(async (req, res) => {
     requestedAt: isOffline ? new Date() : null,
   });
 
-  // Pay on pickup: offer to the nearest driver now. Card rides start after payment succeeds.
+  // Pay on drop-off: offer to the nearest driver now. Card rides start after payment succeeds.
   const dispatched = isOffline ? await startDispatch(trip) : null;
 
   res.status(201).json({
@@ -175,7 +176,7 @@ export const book = asyncHandler(async (req, res) => {
       : "Complete payment to dispatch your ride to nearby drivers.",
     trip: (dispatched || trip).toSafeJSON(),
     note: isOffline
-      ? "Pay on pickup selected — no upfront charge."
+      ? "Pay on drop-off selected — no upfront charge. Pay your driver when you arrive."
       : "Drivers are notified only after payment succeeds.",
   });
 });
@@ -207,6 +208,29 @@ export const getOne = asyncHandler(async (req, res) => {
   res.json({ ok: true, trip: await tripWithDriver(trip) });
 });
 
+/**
+ * POST /api/rides/:id/share — a trip party (rider or driver) creates a live-tracking link for
+ * someone outside the app. Returns the token once (only its hash is stored); the link works
+ * until shortly after the trip ends (utils/locationPrivacy.js).
+ */
+export const shareTrip = asyncHandler(async (req, res) => {
+  const trip = await Trip.findById(req.params.id).select("+shareTokens");
+  if (!trip) throw httpError(404, "Trip not found");
+  const uid = req.user._id.toString();
+  const isParty = trip.riderId.toString() === uid || (trip.driverId && trip.driverId.toString() === uid);
+  if (!isParty) throw httpError(403, "Only the rider or driver can share this trip");
+  if (TRIP_ENDED.includes(trip.status)) throw httpError(409, "This trip has ended — there is nothing live to share");
+  const { token, expiresAt } = addShareToken(trip);
+  await trip.save();
+  res.status(201).json({
+    ok: true,
+    token,
+    path: `/trip/track/${trip._id}?t=${token}`,
+    expiresAt,
+    note: "The link stops working shortly after the trip ends.",
+  });
+});
+
 export const cancel = asyncHandler(async (req, res) => {
   const { reason } = cancelRideSchema.parse(req.body || {});
   const trip = await Trip.findById(req.params.id);
@@ -230,7 +254,7 @@ export const cancel = asyncHandler(async (req, res) => {
   let cancelStatus = "no_charge";
   let message = "";
 
-  // Pay-on-pickup trips are never charged up front, so there is nothing to refund or keep
+  // Pay-on-drop-off trips are never charged up front, so there is nothing to refund or keep
   const chargedOnline = trip.paid && !OFFLINE_PAY.has(trip.paymentMethod);
 
   if (trip.status === "pending_payment" || !chargedOnline) {
@@ -260,6 +284,7 @@ export const cancel = asyncHandler(async (req, res) => {
         cancelReason: reason || null,
         cancelledBy: "rider",
         cancelFeeCents: feeCents,
+        cancelFeeRecipient: feeCents > 0 ? "platform" : null,
         refundCents,
         offeredDriverId: null,
         offerExpiresAt: null,
@@ -275,8 +300,7 @@ export const cancel = asyncHandler(async (req, res) => {
     const settled = await settleTripRefund(cancelled, { reason: "rider cancelled" });
     if (settled?.trip) finalTrip = settled.trip;
   }
-  // TRD 4.7: the late-cancel fee compensates the driver for time and travel
-  if (feeCents > 0) await recordCancellationFeeEarning(cancelled, feeCents);
+  // The late-cancel fee is platform revenue (utils/revenue.js) — no driver earning entry
   stopDispatch(trip._id);
   broadcastTrip(finalTrip);
   // Also closes the radar of a driver holding the offer right now
@@ -292,6 +316,7 @@ export const cancel = asyncHandler(async (req, res) => {
           ? `Reason: ${trip.cancelReason}`
           : `${trip.pickupAddress} → ${trip.destinationAddress}`,
         data: { tripId: trip._id.toString(), status: "cancelled", href: "/driver" },
+        sms: true,
       });
     } catch {
       /* non-fatal */
@@ -468,6 +493,7 @@ export const accept = asyncHandler(async (req, res) => {
       title: "Driver assigned",
       body: "Your driver accepted the ride and is heading your way.",
       data: { tripId: trip._id.toString(), status: "accepted", href: `/book?trip_id=${trip._id}` },
+      sms: true,
     });
   } catch {
     /* non-fatal */
@@ -587,6 +613,8 @@ export const updateStatus = asyncHandler(async (req, res) => {
         title: copy.title,
         body: copy.body,
         data: { tripId: trip._id.toString(), status, href: `/book?trip_id=${trip._id}` },
+        // Texts only for the moment the rider must act: the driver is outside
+        sms: status === "arrived",
       });
     }
   } catch {

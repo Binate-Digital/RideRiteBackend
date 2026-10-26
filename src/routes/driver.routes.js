@@ -14,6 +14,7 @@ router.post("/ensure", driver.ensureDriverRole);
 router.patch("/vehicle", driver.updateVehicle);
 router.delete("/vehicle/pending-change", driver.cancelVehicleChange);
 router.patch("/verification", driver.updateVerification);
+router.get("/documents/:field/url", driver.getMyDocumentUrl);
 router.post("/online", driver.goOnline);
 router.post("/offline", driver.goOffline);
 router.post("/location", driver.updateLocation);

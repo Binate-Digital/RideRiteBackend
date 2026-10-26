@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { optionalDataUrl } from "./auth.schemas.js";
+
+/**
+ * A driver document reference: the key returned by POST /api/uploads/driver-docs (or the value
+ * already on the profile). Arbitrary URLs / data URIs are rejected in the controller.
+ */
+const documentRef = z.union([z.string().trim().max(1024), z.null()]);
 
 export const driverVerificationSchema = z.object({
   dateOfBirth: z.string().trim().min(4).max(32).optional(),
@@ -13,8 +18,8 @@ export const driverVerificationSchema = z.object({
   dlNumber: z.string().trim().min(4).max(40).optional(),
   dlState: z.string().trim().length(2).optional(),
   dlExpiresOn: z.string().trim().min(4).max(32).optional(),
-  licenseFrontUrl: optionalDataUrl.optional(),
-  licenseBackUrl: optionalDataUrl.optional(),
+  licenseFrontUrl: documentRef.optional(),
+  licenseBackUrl: documentRef.optional(),
   vehicleType: z.enum(["sedan", "suv", "truck"]).optional(),
   vehicleMake: z.string().trim().min(1).max(60).optional(),
   vehicleModel: z.string().trim().min(1).max(60).optional(),
@@ -26,8 +31,8 @@ export const driverVerificationSchema = z.object({
   insurancePolicyNumber: z.string().trim().min(2).max(60).optional(),
   insuranceExpiresOn: z.string().trim().min(4).max(32).optional(),
   /** Uploaded via POST /api/uploads/driver-docs (fields registrationDoc / insuranceDoc) */
-  insuranceDocUrl: optionalDataUrl.optional(),
-  registrationDocUrl: optionalDataUrl.optional(),
+  insuranceDocUrl: documentRef.optional(),
+  registrationDocUrl: documentRef.optional(),
   registrationExpiresOn: z.string().trim().min(4).max(32).optional(),
   skipForLater: z.boolean().optional(),
 });

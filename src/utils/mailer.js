@@ -118,6 +118,14 @@ ${row("Total charged", money(totalCents), true)}
   return { subject: `Your ${env.appName} receipt — ${title}`, text: textLines.join("\n"), html };
 }
 
+const OFFLINE_METHOD_LABELS = { cash: "Cash", venmo: "Venmo", zelle: "Zelle" };
+
+/** "Card", or e.g. "Cash — paid to the driver at drop-off" */
+export function paymentMethodLabel(method) {
+  if (OFFLINE_METHOD_LABELS[method]) return `${OFFLINE_METHOD_LABELS[method]} — paid to the driver at drop-off`;
+  return method === "card" ? "Card" : String(method || "");
+}
+
 export function rideReceiptEmail({ fullName, trip }) {
   const lines = [
     { label: "Base fare", cents: trip.baseFareCents },
@@ -135,7 +143,7 @@ export function rideReceiptEmail({ fullName, trip }) {
       ["Vehicle", String(trip.vehicleType || "").toUpperCase()],
       ["Distance", `${trip.distanceMiles} mi · ${trip.durationMinutes} min`],
       ["Completed", new Date(trip.completedAt || Date.now()).toLocaleString("en-US")],
-      ["Payment", trip.paymentMethod],
+      ["Payment", paymentMethodLabel(trip.paymentMethod)],
     ],
     lines,
     totalCents: trip.fareCents,

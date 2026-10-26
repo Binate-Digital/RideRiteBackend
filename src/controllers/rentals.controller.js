@@ -118,7 +118,7 @@ export const listListings = asyncHandler(async (req, res) => {
     if (taken.length) filter._id = { $nin: taken };
   }
   const rows = await RentalListing.find(filter).sort({ createdAt: -1 }).limit(100);
-  res.json({ ok: true, listings: rows.map((r) => r.toSafeJSON()) });
+  res.json({ ok: true, listings: rows.map((r) => r.toPublicJSON()) });
 });
 
 /** GET /api/rentals/locations — cities that have active listings (location filter options) */

@@ -129,6 +129,7 @@ export async function acceptChauffeurBooking(bookingId, driverUserId, now = new 
     title: "Private driver assigned",
     body: `${driver?.fullName?.split(" ")[0] || "Your driver"} will pick you up ${when(assigned.startAt)} at ${assigned.pickupAddress}.`,
     data: { chauffeurBookingId: assigned._id.toString(), href: "/chauffeur", status: "driver_assigned" },
+    sms: true,
     email: true,
   });
   return assigned;
@@ -255,6 +256,7 @@ export async function cancelPaidChauffeur(booking, { by = "rider", reason = null
       title: "Scheduled booking cancelled",
       body: `The rider cancelled the ${when(cancelled.startAt)} booking at ${cancelled.pickupAddress}.`,
       data: { chauffeurBookingId: cancelled._id.toString(), href: "/driver", status: "cancelled" },
+      sms: true,
       email: true,
     });
   }

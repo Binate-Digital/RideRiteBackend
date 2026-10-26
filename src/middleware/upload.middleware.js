@@ -10,6 +10,7 @@ import {
   localPhotosPath,
   uploadConfig,
 } from "../config/upload.config.js";
+import { env } from "../config/env.js";
 
 /**
  * Remote storage — streams file to RideRite upload API → S3.
@@ -151,6 +152,18 @@ export function fileToUploadResult(file, req) {
     storage: "local",
   };
 }
+
+/**
+ * Driver documents: kept in memory (≤ DOCUMENT_MAX_MB each) so the controller can check the
+ * magic bytes and store them privately (utils/privateDocuments.js) — never on the public
+ * upload service or the public /uploads folder.
+ */
+const privateDocumentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: env.documentMaxMb * 1024 * 1024, files: 4 },
+  fileFilter: documentFilter,
+});
+export const uploadPrivateDocuments = (fields) => privateDocumentUpload.fields(fields);
 
 // ——— Exports used by routes ———
 

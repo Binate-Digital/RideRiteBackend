@@ -24,6 +24,52 @@ import { DriverEarning } from "../models/DriverEarning.js";
 import { driverCardsFor } from "../utils/tripDrivers.js";
 import { applyDocumentUpdates, applyVehicleUpdate } from "../utils/driverCompliance.js";
 import { getSettings } from "../utils/settings.js";
+import {
+  DOCUMENT_UPLOAD_FIELDS,
+  deleteDocument,
+  documentExists,
+  keyBelongsTo,
+  profileFieldFor,
+  signedDocumentUrl,
+} from "../utils/privateDocuments.js";
+
+/**
+ * Document fields may only be set to a key this driver uploaded (POST /api/uploads/driver-docs)
+ * or left as they are — never to an arbitrary URL. Empty values mean "unchanged".
+ */
+async function checkDocumentRefs(profile, data, userId) {
+  for (const field of Object.values(DOCUMENT_UPLOAD_FIELDS)) {
+    const value = data[field];
+    if (value === undefined || value === null || value === "") {
+      delete data[field];
+      continue;
+    }
+    if (value === profile[field]) continue;
+    if (!keyBelongsTo(value, userId) || !(await documentExists(value))) {
+      throw httpError(400, "Upload the document file first (POST /api/uploads/driver-docs)", {
+        code: "DOCUMENT_REF_INVALID",
+        field,
+      });
+    }
+  }
+}
+
+/** Short-lived view URL for one document field (owner / admin checked by the caller). */
+export async function documentUrlPayload(profile, fieldName, req) {
+  const field = profileFieldFor(fieldName);
+  if (!field) throw httpError(404, "Unknown document");
+  const signed = await signedDocumentUrl(profile?.[field], { baseUrl: `${req.protocol}://${req.get("host")}` });
+  if (!signed) throw httpError(404, "No file uploaded for this document");
+  return { field, ...signed };
+}
+
+/** GET /api/driver/documents/:field/url — the signed-in driver's own document */
+export const getMyDocumentUrl = asyncHandler(async (req, res) => {
+  const profile = await DriverProfile.findOne({ userId: req.user._id });
+  if (!profile) throw httpError(404, "Driver profile not found");
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true, ...(await documentUrlPayload(profile, req.params.field, req)) });
+});
 
 /** Seeded QA accounts (scripts/seed-test-accounts*) use this email domain. */
 const TEST_ACCOUNT_DOMAIN = "@riderite.test";
@@ -109,6 +155,8 @@ export const updateVerification = asyncHandler(async (req, res) => {
   const wasApproved = Boolean(profile.isApproved);
 
   const { skipForLater, addressLat, addressLng, ...fields } = data;
+  await checkDocumentRefs(profile, fields, req.user._id.toString());
+  const previousFiles = Object.fromEntries(Object.values(DOCUMENT_UPLOAD_FIELDS).map((f) => [f, profile[f]]));
   for (const [key, value] of Object.entries(fields)) {
     if (value === undefined || VEHICLE_KEYS.includes(key) || DOCUMENT_KEYS.includes(key)) continue;
     profile[key] = value;
@@ -163,6 +211,10 @@ export const updateVerification = asyncHandler(async (req, res) => {
   }
 
   await profile.save();
+  // Replaced private files are removed (no orphaned copies of ID documents)
+  for (const [field, old] of Object.entries(previousFiles)) {
+    if (old && old !== profile[field]) void deleteDocument(old);
+  }
 
   const subscriptionActive = await driverHasActiveSubscription(req.user._id);
   res.json({
@@ -308,7 +360,7 @@ export const getEarnings = asyncHandler(async (req, res) => {
 
 const EARNING_TYPE_LABELS = {
   trip: "Trip",
-  cancellation_fee: "Cancellation fee",
+  cancellation_fee: "Cancellation fee (legacy)",
   rental: "Rental host",
   chauffeur: "Private driver",
   bonus: "Bonus",

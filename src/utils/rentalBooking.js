@@ -182,6 +182,7 @@ export async function confirmRentalPaid(bookingId, { paymentIntentId, provider }
       title: "Rental confirmed",
       body: `${listing?.title || "Your rental"} · ${dayKey(booking.startDate)} → ${dayKey(booking.endDate)}`,
       data: { rentalBookingId: booking._id.toString(), href: "/rentals" },
+      sms: true,
     });
     if (String(booking.ownerId) !== String(booking.renterId) && booking.source === "peer") {
       await notifyUser(booking.ownerId, {
@@ -212,6 +213,7 @@ export async function failRentalPayment(bookingId, paymentIntentId) {
       body: `Your card was declined for ${money(booking.totalCents)}. The dates were released — book again to retry.`,
       data: { rentalBookingId: booking._id.toString(), href: "/rentals" },
       email: true,
+      sms: true,
     });
   }
   return booking;

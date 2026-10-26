@@ -16,6 +16,7 @@ export const PERMISSIONS = [
   "users:gdpr", // export a user's data, delete / anonymize
   "drivers:read",
   "drivers:approve", // account, document and vehicle-change review
+  "drivers:documents", // open a driver's private documents (license, registration, insurance)
   "trips:read",
   "trips:refund",
   "trips:chat", // read a trip's chat transcript (disputes only)
@@ -31,6 +32,7 @@ export const PERMISSIONS = [
   "promos:manage",
   "settings:read",
   "settings:write",
+  "legal:write", // edit Terms / Privacy / Refund policy / EULA pages
   "audit:read",
   "health:read",
   "admins:manage",
@@ -46,6 +48,7 @@ export const ROLE_PERMISSIONS = {
     "users:manage",
     "users:export",
     "drivers:approve",
+    "drivers:documents",
     "trips:chat",
     "disputes:manage",
     "rentals:manage",

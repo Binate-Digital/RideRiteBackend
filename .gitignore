@@ -35,3 +35,6 @@ uploads/
 
 # Postman (local only — not tracked)
 postman/
+
+# Private driver documents (local fallback when S3_* is unset)
+private-uploads/

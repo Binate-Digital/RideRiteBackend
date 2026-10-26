@@ -81,6 +81,20 @@ function planFromStripe(stripeSub) {
 /** Copy a Stripe Subscription object onto our record. Returns the updated DriverSubscription. */
 export async function applyStripeSubscription(stripeSub) {
   const existing = await DriverSubscription.findOne({ stripeSubscriptionId: stripeSub.id });
+  let adopting = false;
+  if (!existing) {
+    // Auto-renew being set up for a manual membership: adopt it only once a card is saved
+    const owner = await DriverSubscription.findOne({ pendingStripeSubscriptionId: stripeSub.id });
+    if (owner) {
+      if (["canceled", "incomplete_expired"].includes(stripeSub.status)) {
+        owner.pendingStripeSubscriptionId = null;
+        await owner.save();
+        return owner;
+      }
+      if (!stripeSub.default_payment_method) return owner;
+      adopting = true;
+    }
+  }
   const userId = existing?.userId || stripeSub.metadata?.userId;
   if (!userId) return null;
   const planId = planFromStripe(stripeSub);
@@ -98,8 +112,10 @@ export async function applyStripeSubscription(stripeSub) {
         stripeSubscriptionId: stripeSub.id,
         stripeCustomerId: typeof stripeSub.customer === "string" ? stripeSub.customer : stripeSub.customer?.id,
         cancelAtPeriodEnd: Boolean(stripeSub.cancel_at_period_end),
-        ...(start ? { currentPeriodStart: start } : {}),
+        // Adopting a trial that runs to the manual period's end: keep the period as it was
+        ...(start && !adopting ? { currentPeriodStart: start } : {}),
         ...(end ? { currentPeriodEnd: end } : {}),
+        ...(adopting ? { pendingStripeSubscriptionId: null } : {}),
       },
     },
     { upsert: true, new: true },
@@ -127,10 +143,11 @@ export async function forceDriverOffline(userId, status) {
     title: status === "past_due" ? "Membership payment failed" : "Membership ended",
     body:
       status === "past_due"
-        ? "We couldn't renew your driver membership, so you've been taken offline. Update your card in Billing to keep driving."
-        : "Your driver membership is no longer active. Subscribe again in Billing to receive ride requests.",
+        ? "We couldn't charge your card for the membership renewal, so you've been taken offline. Tap Renew in Billing and pay with a working card to keep driving."
+        : "Your driver membership is no longer active. Tap Renew in Billing to receive ride requests again.",
     data: { href: "/driver/billing", status },
     email: true,
+    sms: status === "past_due",
   });
 }
 
@@ -159,7 +176,10 @@ export async function handleInvoicePaid(invoice) {
     sub.status = "active";
     await sub.save();
   }
-  if (!sub) return null;
+  // A pending auto-renew setup (trial, no card yet) is not this driver's membership yet;
+  // a $0 trial invoice is not a payment either
+  if (!sub || sub.stripeSubscriptionId !== subId) return sub;
+  if (invoice.amount_paid === 0) return sub;
   sub.lastPaymentAt = new Date((invoice.status_transitions?.paid_at || Date.now() / 1000) * 1000);
   if (!sub.firstActiveAt) sub.firstActiveAt = sub.currentPeriodStart || sub.lastPaymentAt;
   await sub.save();
@@ -217,7 +237,14 @@ export async function handleInvoicePaymentFailed(invoice) {
 /** customer.subscription.deleted — ended (canceled at period end, or by Stripe after dunning). */
 export async function handleSubscriptionDeleted(stripeSub) {
   const sub = await DriverSubscription.findOne({ stripeSubscriptionId: stripeSub.id });
-  if (!sub) return null;
+  if (!sub) {
+    // An auto-renew setup abandoned without a card (Stripe cancels it at trial end)
+    return DriverSubscription.findOneAndUpdate(
+      { pendingStripeSubscriptionId: stripeSub.id },
+      { $set: { pendingStripeSubscriptionId: null } },
+      { new: true },
+    );
+  }
   const wasActive = sub.status === "active";
   sub.status = "canceled";
   sub.cancelAtPeriodEnd = false;

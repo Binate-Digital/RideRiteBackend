@@ -36,9 +36,31 @@ const driverSubscriptionSchema = new mongoose.Schema(
     firstActiveAt: { type: Date, default: null },
     /** Period end a "membership ends soon" notice was sent for (one per period) */
     expiryNoticeFor: { type: Date, default: null },
+    /**
+     * "Set up auto-renew" on a manual membership (no Stripe subscription behind it): a Stripe
+     * subscription trialing until the current period end, adopted once its card is saved.
+     */
+    pendingStripeSubscriptionId: { type: String, default: null, index: true },
   },
   { timestamps: true },
 );
+
+/**
+ * What the driver can expect next — drives the billing page actions and notice copy:
+ *   renewing    Stripe subscription, renews automatically at currentPeriodEnd
+ *   ending      Stripe subscription set to cancel at period end (Resume undoes it)
+ *   manual      active without a Stripe subscription (mock / seeded / admin): ends at
+ *               currentPeriodEnd, never renews (Renew / Set up auto-renew)
+ *   past_due    a renewal charge failed; expired / canceled / incomplete as stored
+ */
+driverSubscriptionSchema.methods.billingState = function billingState() {
+  if (this.status === "active") {
+    if (!this.currentPeriodEnd || new Date(this.currentPeriodEnd).getTime() <= Date.now()) return "expired";
+    if (!this.stripeSubscriptionId) return "manual";
+    return this.cancelAtPeriodEnd ? "ending" : "renewing";
+  }
+  return this.status;
+};
 
 driverSubscriptionSchema.methods.isActiveNow = function isActiveNow() {
   if (this.status !== "active") return false;
@@ -58,6 +80,10 @@ driverSubscriptionSchema.methods.toSafeJSON = function toSafeJSON() {
     cancelAtPeriodEnd: this.cancelAtPeriodEnd,
     firstActiveAt: this.firstActiveAt,
     active: this.isActiveNow(),
+    billing: this.stripeSubscriptionId ? "stripe" : "manual",
+    state: this.billingState(),
+    autoRenews: this.billingState() === "renewing",
+    autoRenewPending: Boolean(this.pendingStripeSubscriptionId),
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

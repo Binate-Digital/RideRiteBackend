@@ -1,4 +1,5 @@
 import { Router } from "express";
+import * as legal from "../controllers/legal.controller.js";
 import { requireAdmin, requireAuth, requirePermission as can } from "../middleware/auth.js";
 import * as admin from "../controllers/admin.controller.js";
 import * as ops from "../controllers/adminOps.controller.js";
@@ -38,6 +39,7 @@ router.get("/drivers", can("drivers:read"), admin.listDrivers);
 router.get("/drivers/:userId", can("drivers:read"), admin.getDriver);
 router.patch("/drivers/:userId/status", can("drivers:approve"), admin.setDriverStatus);
 router.patch("/drivers/:userId/documents/:doc", can("drivers:approve"), admin.reviewDriverDocument);
+router.get("/drivers/:userId/documents/:field/url", can("drivers:documents"), admin.getDriverDocumentUrl);
 router.patch("/drivers/:userId/vehicle-change", can("drivers:approve"), admin.reviewDriverVehicleChange);
 router.get("/export/drivers.:format", can("users:export"), admin.exportDrivers);
 
@@ -76,6 +78,11 @@ router.get("/bonuses", can("bonuses:manage"), ops.listBonuses);
 router.patch("/bonuses/:id", can("bonuses:manage"), ops.updateBonus);
 router.get("/maintenance", can("maintenance:manage"), ops.listMaintenance);
 router.patch("/maintenance/:id", can("maintenance:manage"), ops.updateMaintenance);
+
+router.get("/legal", can("legal:write"), legal.adminList);
+router.post("/legal", can("legal:write"), legal.adminCreate);
+router.put("/legal/:slug", can("legal:write"), legal.adminUpdate);
+router.delete("/legal/:slug", can("legal:write"), legal.adminDelete);
 
 router.get("/promos", can("promos:manage"), ops.listPromos);
 router.post("/promos", can("promos:manage"), ops.createPromo);

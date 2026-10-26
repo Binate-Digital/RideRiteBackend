@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import * as rides from "../controllers/rides.controller.js";
 import * as tripChat from "../controllers/tripChat.controller.js";
 import * as telephony from "../controllers/telephony.controller.js";
+import { trackMyTrip } from "../controllers/public.controller.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requireVerified } from "../middleware/requireVerified.js";
 
@@ -26,9 +27,11 @@ router.get("/", requireAuth, requireVerified, rides.listMine);
 router.get("/open", requireAuth, requireVerified, requireRole("driver", "admin"), rides.listOpen);
 
 router.get("/:id", requireAuth, requireVerified, rides.getOne);
+router.get("/:id/track", requireAuth, requireVerified, trackMyTrip);
 router.get("/:id/messages", requireAuth, requireVerified, tripChat.listMessages);
 router.post("/:id/messages", requireAuth, requireVerified, writeLimiter, tripChat.sendMessage);
 router.post("/:id/call", requireAuth, requireVerified, writeLimiter, telephony.callTripParty);
+router.post("/:id/share", requireAuth, requireVerified, writeLimiter, rides.shareTrip);
 router.post("/:id/cancel", requireAuth, requireVerified, writeLimiter, rides.cancel);
 router.post("/:id/retry", requireAuth, requireVerified, writeLimiter, rides.retry);
 router.post("/:id/accept", requireAuth, requireVerified, requireRole("driver", "admin"), writeLimiter, rides.accept);

@@ -26,9 +26,8 @@ const userSchema = new mongoose.Schema(
     /** Normalized US number (+1XXXXXXXXXX) — set once the number is verified by SMS OTP. */
     phoneE164: { type: String, default: undefined },
     isPhoneVerified: { type: Boolean, default: false },
-    /** Social sign-in subjects (Google `sub`, Apple `sub`) */
+    /** Google sign-in subject (`sub`) */
     googleId: { type: String, default: undefined, select: false },
-    appleId: { type: String, default: undefined, select: false },
     avatarUrl: { type: String, default: null },
     profileCompleted: { type: Boolean, default: false },
     // Social-only accounts have no password until they set one (reset flow)
@@ -84,6 +83,19 @@ const userSchema = new mongoose.Schema(
     notificationChannels: {
       email: { type: Boolean, default: true },
       push: { type: Boolean, default: true },
+      /** Text messages for high-value events (needs a verified phone; utils/smsNotify.js) */
+      sms: { type: Boolean, default: true },
+    },
+    /** Signup consent: "I agree to the Terms and Privacy Policy" (versions, e.g. "terms:v2,privacy:v1") */
+    termsAcceptedAt: { type: Date, default: null },
+    termsVersion: { type: String, default: null },
+    /** SMS per category, on top of the category switch above (only SMS_CATEGORIES ever text) */
+    smsPrefs: {
+      ride: { type: Boolean, default: true },
+      chauffeur: { type: Boolean, default: true },
+      rental: { type: Boolean, default: true },
+      payment: { type: Boolean, default: true },
+      subscription: { type: Boolean, default: true },
     },
   },
   { timestamps: true },
@@ -93,7 +105,6 @@ const presentString = (field) => ({ partialFilterExpression: { [field]: { $type:
 userSchema.index({ email: 1 }, { unique: true, ...presentString("email") });
 userSchema.index({ phoneE164: 1 }, { unique: true, ...presentString("phoneE164") });
 userSchema.index({ googleId: 1 }, { unique: true, ...presentString("googleId") });
-userSchema.index({ appleId: 1 }, { unique: true, ...presentString("appleId") });
 
 /** Email or verified phone — either one activates the account. */
 userSchema.methods.isVerified = function isVerified() {
@@ -121,6 +132,8 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     role: this.role,
     isEmailVerified: this.isEmailVerified,
     isActive: this.isActive,
+    termsAcceptedAt: this.termsAcceptedAt ?? null,
+    termsVersion: this.termsVersion ?? null,
     ...(this.role === "admin"
       ? { adminRole: effectiveAdminRole(this), permissions: permissionsFor(this) }
       : {}),
