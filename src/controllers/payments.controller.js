@@ -190,16 +190,10 @@ export const createRidePaymentIntent = asyncHandler(async (req, res) => {
     },
   };
 
-  if (trip.paymentMethod === "cashapp") {
-    createParams.payment_method_types = ["cashapp"];
-  } else if (trip.paymentMethod === "paypal") {
-    createParams.payment_method_types = ["paypal"];
-  } else {
-    createParams.automatic_payment_methods = {
-      enabled: true,
-      allow_redirects: "never",
-    };
-  }
+  createParams.automatic_payment_methods = {
+    enabled: true,
+    allow_redirects: "never",
+  };
 
   const finalIntent = await stripe.paymentIntents.create(createParams);
 

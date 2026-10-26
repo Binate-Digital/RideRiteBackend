@@ -9,14 +9,9 @@ const coordsSchema = z
   .optional();
 
 export const vehicleEnum = z.enum(["sedan", "suv", "truck"]);
-export const paymentMethodEnum = z.enum([
-  "card",
-  "cashapp",
-  "paypal",
-  "cash",
-  "venmo",
-  "zelle",
-]);
+// Card goes through Stripe; the rest are paid to the driver at pickup.
+// "cashapp" / "paypal" may still appear on old trips but aren't offered (not in the TRD).
+export const paymentMethodEnum = z.enum(["card", "cash", "venmo", "zelle"]);
 
 export const estimateSchema = z.object({
   pickup: z.string().trim().min(2).max(300),
