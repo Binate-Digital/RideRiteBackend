@@ -2,7 +2,8 @@ import { ChauffeurBooking } from "../models/ChauffeurBooking.js";
 import { RentalBooking } from "../models/RentalBooking.js";
 import { RentalListing } from "../models/RentalListing.js";
 import { env } from "../config/env.js";
-import { cancelUnassignedStartedBookings } from "./chauffeurAssignment.js";
+import { cancelUnassignedStartedBookings, expireDirectOffers } from "./chauffeurAssignment.js";
+import { autoCompleteRentals } from "./rentalBooking.js";
 
 /**
  * Booking reminders (TRD 4.9 / 4.11): riders, renters and assigned chauffeurs are reminded
@@ -109,8 +110,12 @@ export async function sweepReminders(now = new Date()) {
     }
   }
   // Paid private-driver bookings nobody accepted by their start time: cancel + full refund
+  // A driver the rider picked didn't answer in time: rider picks again (or auto fallback)
+  const directTimedOut = await expireDirectOffers(now);
   const autoCancelled = await cancelUnassignedStartedBookings(now);
-  return { sent, autoCancelled };
+  // Rentals RENTAL_AUTO_COMPLETE_HOURS past their return date: completed (owner earning payable)
+  const rentalsCompleted = await autoCompleteRentals(now);
+  return { sent, autoCancelled, directTimedOut, rentalsCompleted };
 }
 
 export function startReminderSweeper() {

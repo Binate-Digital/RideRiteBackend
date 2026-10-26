@@ -88,7 +88,16 @@ export const inboundVoice = asyncHandler(async (req, res) => {
     .sort({ updatedAt: -1 })
     .limit(5);
   const trip = trips.find((t) => proxyNumberFor(t._id) === pool) || null;
-  if (!trip) return unreachable();
+  if (!trip) {
+    // Returning a call about an active chauffeur booking / P2P rental (see bookingChat.controller)
+    const { bookingCallTarget } = await import("./bookingChat.controller.js");
+    const target = await bookingCallTarget(ids, pool, proxyNumberFor);
+    if (!target) return unreachable();
+    const callee = await User.findById(target.otherId).select("phone phoneE164");
+    const dial = userPhoneE164(callee);
+    if (!dial) return unreachable();
+    return res.send(bridgeTwiml({ to: dial, proxyNumber: pool, say: `Connecting you to your ${target.label}.` }));
+  }
   const callerIsRider = ids.some((id) => String(id) === String(trip.riderId));
   const other = await User.findById(callerIsRider ? trip.driverId : trip.riderId).select("phone phoneE164");
   const to = userPhoneE164(other);

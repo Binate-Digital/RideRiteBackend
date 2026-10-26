@@ -5,7 +5,8 @@ import { User } from "../models/User.js";
 import { env } from "../config/env.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { cancelOpenIntent, recordIntentSucceeded } from "./checkout.js";
-import { adjustRentalOwnerEarning, recordRentalOwnerEarning } from "./earnings.js";
+import { adjustRentalOwnerEarning, recordRentalOwnerEarning, releaseRentalOwnerEarning } from "./earnings.js";
+import { emitToUser } from "../realtime/index.js";
 import { refundPayment } from "./refunds.js";
 import { Payment } from "../models/Payment.js";
 import { rentalReceiptEmail } from "./mailer.js";
@@ -105,7 +106,8 @@ export async function expireRentalHold(bookingId, { paymentFailed = false } = {}
   );
   if (!booking) return null;
   await releaseRentalDays(booking._id);
-  if (!paymentFailed) await cancelOpenIntent(booking.stripePaymentIntentId);
+  // Canceled in Stripe too (a declined intent included), so the dashboard shows it closed
+  await cancelOpenIntent(booking.stripePaymentIntentId);
   return booking;
 }
 
@@ -420,4 +422,124 @@ export async function declineRentalByOwner(booking, { reason = "", now = new Dat
     data: { rentalBookingId: cancelled._id.toString(), href: "/driver" },
   });
   return finalBooking;
+}
+
+// ---------------------------------------------------------------- lifecycle (TRD 4.8 / 5.8)
+
+/** Push a rental's latest state to its renter and owner (web refreshes the row). */
+export function broadcastRental(booking) {
+  const payload = { booking: booking.toSafeJSON() };
+  emitToUser(String(booking.renterId), "rental:update", payload);
+  if (String(booking.ownerId) !== String(booking.renterId)) emitToUser(String(booking.ownerId), "rental:update", payload);
+}
+
+/** Handover is possible from the pickup day (UTC) on. */
+export function canHandOver(booking, now = new Date()) {
+  return Boolean(booking.paid && booking.status === "confirmed" && now >= toUtcDay(booking.startDate));
+}
+
+/** Return: an active rental, or a confirmed one whose handover was never recorded (after pickup day). */
+export function canReturn(booking, now = new Date()) {
+  return Boolean(booking.paid && (booking.status === "active" || canHandOver(booking, now)));
+}
+
+/**
+ * Owner (P2P) or admin (any, incl. company fleet) records the vehicle was picked up:
+ * confirmed → active. Not before the pickup date.
+ */
+export async function handOverRental(booking, { by = "owner", now = new Date() } = {}) {
+  if (!booking.paid || booking.status !== "confirmed") {
+    throw httpError(409, `Only a confirmed rental can be handed over (this one is ${booking.status})`, { code: "NOT_HANDOVERABLE" });
+  }
+  if (!canHandOver(booking, now)) {
+    throw httpError(400, `Handover opens on the pickup date (${dayKey(booking.startDate)})`, { code: "TOO_EARLY" });
+  }
+  const active = await RentalBooking.findOneAndUpdate(
+    { _id: booking._id, status: "confirmed", paid: true },
+    { $set: { status: "active", handedOverAt: now, handedOverBy: by } },
+    { new: true },
+  );
+  if (!active) throw httpError(409, "The booking just changed — refresh and try again");
+  const listing = await RentalListing.findById(active.listingId).select("title");
+  const { notifyUser } = await import("../controllers/notifications.controller.js");
+  await notifyUser(active.renterId, {
+    category: "rental",
+    title: "Rental started",
+    body: `${listing?.title || "Your rental"} is yours until ${dayKey(active.endDate)}. Drive safe!`,
+    data: { rentalBookingId: active._id.toString(), href: "/trips", status: "active" },
+  });
+  broadcastRental(active);
+  return active;
+}
+
+/**
+ * The vehicle is back: → completed. The P2P owner's share becomes payable with the next
+ * payout and the platform's commission counts as earned (TRD 5.8).
+ * by: owner | admin | system (auto-complete RENTAL_AUTO_COMPLETE_HOURS after the end).
+ */
+export async function completeRental(booking, { by = "owner", now = new Date() } = {}) {
+  if (!canReturn(booking, now)) {
+    throw httpError(
+      409,
+      booking.status === "confirmed"
+        ? `This rental starts on ${dayKey(booking.startDate)}`
+        : `Only an active rental can be returned (this one is ${booking.status})`,
+      { code: "NOT_RETURNABLE" },
+    );
+  }
+  const done = await RentalBooking.findOneAndUpdate(
+    { _id: booking._id, status: { $in: ["confirmed", "active"] }, paid: true },
+    {
+      $set: {
+        status: "completed",
+        returnedAt: by === "system" ? null : now,
+        completedAt: now,
+        completedBy: by,
+        ...(booking.status === "confirmed" ? { handedOverAt: booking.handedOverAt || booking.startDate } : {}),
+      },
+    },
+    { new: true },
+  );
+  if (!done) throw httpError(409, "The booking just changed — refresh and try again");
+  await releaseRentalOwnerEarning(done).catch((err) =>
+    console.error(`[earnings] rental ${done._id} owner earning not released:`, err.message),
+  );
+  const listing = await RentalListing.findById(done.listingId).select("title");
+  const { notifyUser } = await import("../controllers/notifications.controller.js");
+  await notifyUser(done.renterId, {
+    category: "rental",
+    title: "Rental completed",
+    body: `${listing?.title || "Your rental"} · ${dayKey(done.startDate)} → ${dayKey(done.endDate)}. Thanks for renting with RideRite — your receipt is in Trips.`,
+    data: { rentalBookingId: done._id.toString(), href: "/trips", status: "completed" },
+  });
+  if (done.source === "peer" && String(done.ownerId) !== String(done.renterId)) {
+    await notifyUser(done.ownerId, {
+      category: "rental",
+      title: by === "system" ? "Rental completed automatically" : "Rental completed",
+      body: `${listing?.title || "Your vehicle"} · ${dayKey(done.startDate)} → ${dayKey(done.endDate)}. ${money(ownerPayoutCents(done))} is now in your next payout.`,
+      data: { rentalBookingId: done._id.toString(), href: "/driver", status: "completed" },
+    });
+  }
+  broadcastRental(done);
+  return done;
+}
+
+/** Sweeper: paid rentals RENTAL_AUTO_COMPLETE_HOURS past their return date are completed. */
+export async function autoCompleteRentals(now = new Date()) {
+  const cutoff = new Date(now.getTime() - env.rentalAutoCompleteHours * 3600000);
+  const due = await RentalBooking.find({
+    status: { $in: ["confirmed", "active"] },
+    paid: true,
+    endDate: { $lte: cutoff },
+  }).limit(100);
+  let n = 0;
+  for (const b of due) {
+    try {
+      await completeRental(b, { by: "system", now });
+      n += 1;
+    } catch (err) {
+      if (err.statusCode !== 409) console.error(`[rentals] auto-complete ${b._id}:`, err.message);
+    }
+  }
+  return n;
 }

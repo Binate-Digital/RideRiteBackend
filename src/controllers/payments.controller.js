@@ -183,7 +183,10 @@ export const createRidePaymentIntent = asyncHandler(async (req, res) => {
     amount: trip.fareCents,
     currency: "usd",
     customer: customerId,
+    description: `RideRite ride · ${trip.vehicleType?.toUpperCase?.() || "RIDE"} · ${String(trip.pickupAddress || "").slice(0, 60)} → ${String(trip.destinationAddress || "").slice(0, 60)}`,
+    receipt_email: req.user.email || undefined,
     metadata: {
+      app: "riderite",
       tripId: trip._id.toString(),
       userId: req.user._id.toString(),
       purpose: "ride",
@@ -195,23 +198,33 @@ export const createRidePaymentIntent = asyncHandler(async (req, res) => {
     allow_redirects: "never",
   };
 
-  const finalIntent = await stripe.paymentIntents.create(createParams);
+  // One intent per (trip, attempt): a double-submitted checkout gets the same intent back
+  const attempt = await Payment.countDocuments({ tripId: trip._id, purpose: "ride", provider: "stripe" });
+  const finalIntent = await stripe.paymentIntents.create(createParams, {
+    idempotencyKey: `pi_ride_${trip._id}_${attempt}`,
+  });
 
   trip.stripePaymentIntentId = finalIntent.id;
   trip.stripeClientSecret = finalIntent.client_secret;
   trip.paymentStatus = "pending";
   await trip.save();
 
-  await Payment.create({
-    userId: req.user._id,
-    tripId: trip._id,
-    purpose: "ride",
-    amountCents: trip.fareCents,
-    status: "pending",
-    provider: "stripe",
-    stripePaymentIntentId: finalIntent.id,
-    paymentMethodType: trip.paymentMethod,
-  });
+  await Payment.findOneAndUpdate(
+    { stripePaymentIntentId: finalIntent.id },
+    {
+      $setOnInsert: {
+        userId: req.user._id,
+        tripId: trip._id,
+        purpose: "ride",
+        amountCents: trip.fareCents,
+        status: "pending",
+        provider: "stripe",
+        stripePaymentIntentId: finalIntent.id,
+        paymentMethodType: trip.paymentMethod,
+      },
+    },
+    { upsert: true, new: true },
+  );
 
   res.status(201).json({
     ok: true,
@@ -426,7 +439,7 @@ export const listMyPayments = asyncHandler(async (req, res) => {
 });
 
 /** Shape of the Stripe payment_intent we act on (purpose from our metadata). */
-async function onIntentSucceeded(pi) {
+export async function onIntentSucceeded(pi) {
   const purpose = pi.metadata?.purpose || (pi.metadata?.tripId ? "ride" : null);
   const method = pi.payment_method_types?.[0] || "card";
   if (purpose === "ride" && pi.metadata?.tripId) {
@@ -448,7 +461,7 @@ async function onIntentSucceeded(pi) {
   return null;
 }
 
-async function onIntentFailed(pi) {
+export async function onIntentFailed(pi) {
   const purpose = pi.metadata?.purpose || (pi.metadata?.tripId ? "ride" : null);
   if (purpose === "ride" && pi.metadata?.tripId) {
     const failed = await Trip.findOneAndUpdate(
@@ -499,6 +512,11 @@ export async function handleStripeEvent(event) {
     case "payment_intent.payment_failed":
       handled = await onIntentFailed(obj);
       break;
+    case "payment_intent.canceled":
+      // Ours were cancelled by us (abandoned / hold expired); just keep the Payment row in step
+      await Payment.updateMany({ stripePaymentIntentId: obj.id, status: "pending" }, { $set: { status: "canceled" } });
+      handled = "canceled";
+      break;
     case "invoice.paid":
     case "invoice.payment_succeeded":
       handled = (await handleInvoicePaid(obj)) ? "subscription" : null;
@@ -538,7 +556,13 @@ export const stripeWebhook = asyncHandler(async (req, res) => {
     }
   } else {
     if (!env.stripeWebhookSecret) {
-      throw httpError(503, "STRIPE_WEBHOOK_SECRET not configured");
+      // Never act on an unsigned event. Payments still reach the right state through the
+      // client confirm/sync calls and the reconcile sweep (utils/stripeReconcile.js).
+      console.error(
+        "[stripe] !!! Webhook received but STRIPE_WEBHOOK_SECRET is not set — event ignored. " +
+          "Set it from Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret.",
+      );
+      throw httpError(503, "STRIPE_WEBHOOK_SECRET not configured", { code: "WEBHOOK_SECRET_MISSING" });
     }
     const sig = req.headers["stripe-signature"];
     try {

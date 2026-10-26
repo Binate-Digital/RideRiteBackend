@@ -31,6 +31,11 @@ import { adminBus } from "../utils/adminEvents.js";
  *                                                    private-driver booking was paid
  *   chauffeur:closed  { bookingId }                  (drivers) taken or cancelled
  *   chauffeur:update  { booking }                    rider / assigned driver: status change
+ *   chauffeur:request { bookingId, expiresAt }       (one driver) a rider picked them; accept
+ *                                                    or decline before expiresAt
+ *   rental:update     { booking }                    renter / owner: handover, return, cancel
+ *   booking:message   { kind, bookingId, message }   chauffeur / rental chat (parties; admins
+ *                                                    for company-fleet rentals)
  *   admin:counters    { activeTrips, … }             (admins) live dashboard counters, at most
  *                                                    once per ADMIN_COUNTERS_THROTTLE_MS
  *   admin:activity    { kind, id, status }           (admins) a trip / rental / chauffeur changed
@@ -157,6 +162,11 @@ function emit(room, event, payload) {
 
 export function emitToUser(userId, event, payload) {
   if (userId) emit(`user:${userId}`, event, payload);
+}
+
+/** Every connected admin (fleet rental support chat). */
+export function emitToAdmins(event, payload) {
+  emit("admins", event, payload);
 }
 
 /** Every connected driver (the client re-fetches and filters by its own eligibility). */

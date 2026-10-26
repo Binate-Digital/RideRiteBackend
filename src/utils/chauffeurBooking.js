@@ -74,13 +74,18 @@ export async function expireChauffeurHold(bookingId, { paymentFailed = false } =
     { $set: { status: "expired", paymentStatus: paymentFailed ? "failed" : "unpaid" } },
     { new: true },
   );
-  if (booking && !paymentFailed) await cancelOpenIntent(booking.stripePaymentIntentId);
+  if (!booking) return null;
+  // The picked driver's time is free again
+  const { releaseDriverSlots } = await import("./chauffeurAssignment.js");
+  await releaseDriverSlots(booking._id);
+  // Canceled in Stripe too, so the dashboard shows it closed (a declined intent included)
+  await cancelOpenIntent(booking.stripePaymentIntentId);
   return booking;
 }
 
 /** Payment succeeded → booking confirmed (idempotent). A late payment revives an expired hold. */
 export async function confirmChauffeurPaid(bookingId, { paymentIntentId, provider }) {
-  const booking = await ChauffeurBooking.findOneAndUpdate(
+  let booking = await ChauffeurBooking.findOneAndUpdate(
     { _id: bookingId, status: { $in: ["pending_payment", "expired"] }, paid: false },
     {
       $set: {
@@ -122,15 +127,30 @@ export async function confirmChauffeurPaid(bookingId, { paymentIntentId, provide
   } catch {
     /* non-fatal */
   }
-  // Show it in eligible drivers' "Scheduled bookings" right away
-  emitToDrivers("chauffeur:open", {
-    bookingId: booking._id.toString(),
-    vehicleType: booking.vehicleType,
-    startAt: booking.startAt,
-  });
+  const assignment = await import("./chauffeurAssignment.js");
+  if (booking.requestedDriverId) {
+    // Rider picked a driver: only they are offered it, until the direct-accept deadline. A
+    // late payment on an expired hold may have lost the driver's time meanwhile.
+    if (await assignment.claimDriverSlots(booking.requestedDriverId, booking)) {
+      booking = await ChauffeurBooking.findOneAndUpdate(
+        { _id: booking._id, requestedDriverId: booking.requestedDriverId, driverId: null },
+        { $set: { directOfferExpiresAt: assignment.directOfferDeadline(booking.startAt) } },
+        { new: true },
+      ) || booking;
+      await assignment.offerToRequestedDriver(booking).catch(() => {});
+    } else {
+      booking = (await assignment.directOfferFailed(booking, "unavailable")) || booking;
+    }
+  } else {
+    // Show it in eligible drivers' "Scheduled bookings" right away
+    emitToDrivers("chauffeur:open", {
+      bookingId: booking._id.toString(),
+      vehicleType: booking.vehicleType,
+      startAt: booking.startAt,
+    });
+  }
   try {
-    const { broadcastChauffeur } = await import("./chauffeurAssignment.js");
-    await broadcastChauffeur(booking);
+    await assignment.broadcastChauffeur(booking);
   } catch {
     /* non-fatal */
   }

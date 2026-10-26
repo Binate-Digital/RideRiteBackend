@@ -13,7 +13,7 @@ import { SEEDED_CONNECT_ACCOUNT_PREFIX, isStripeConnectReady } from "./driverRea
  * (acct_seedtest_*) never call Stripe: the transfer is simulated and recorded as such.
  * A balance of zero or less (deductions exceed earnings) is carried over, not paid.
  */
-export async function payoutDriver(driverId, { initiatedBy = null } = {}) {
+export async function payoutDriver(driverId, { initiatedBy = null, minCents = 0 } = {}) {
   const driverObjectId = new mongoose.Types.ObjectId(String(driverId));
   const profile = await DriverProfile.findOne({ userId: driverObjectId });
   const accountId = profile?.stripeConnectAccountId || null;
@@ -23,6 +23,8 @@ export async function payoutDriver(driverId, { initiatedBy = null } = {}) {
   const amountCents = pending.reduce((a, e) => a + e.netCents, 0);
   if (!pending.length) return { driverId: String(driverId), skipped: "nothing pending" };
   if (amountCents <= 0) return { driverId: String(driverId), skipped: "balance not positive", amountCents };
+  // Weekly run: small balances roll over (PAYOUT_MIN_CENTS)
+  if (amountCents < minCents) return { driverId: String(driverId), skipped: "below minimum", amountCents };
   if (!accountId || (!simulated && !isStripeConnectReady(profile))) {
     return { driverId: String(driverId), skipped: "Stripe Connect not ready", amountCents };
   }
@@ -59,8 +61,8 @@ export async function payoutDriver(driverId, { initiatedBy = null } = {}) {
           currency: "usd",
           destination: accountId,
           transfer_group: `payout_${payout._id}`,
-          description: "RideRite driver earnings",
-          metadata: { payoutId: payout._id.toString(), driverId: String(driverId) },
+          description: `RideRite driver earnings · ${claimed.length} item(s)`,
+          metadata: { app: "riderite", purpose: "driver_payout", payoutId: payout._id.toString(), driverId: String(driverId) },
         },
         { idempotencyKey: `payout_${payout._id}` },
       );
@@ -98,11 +100,11 @@ export async function payoutDriver(driverId, { initiatedBy = null } = {}) {
 }
 
 /** Run payouts for one driver, or every driver with pending entries. */
-export async function runPayouts({ driverId = null, initiatedBy = null } = {}) {
+export async function runPayouts({ driverId = null, initiatedBy = null, minCents = 0 } = {}) {
   const driverIds = driverId
     ? [driverId]
     : await DriverEarning.distinct("driverId", { status: "pending" });
   const results = [];
-  for (const id of driverIds) results.push(await payoutDriver(id, { initiatedBy }));
+  for (const id of driverIds) results.push(await payoutDriver(id, { initiatedBy, minCents }));
   return results;
 }

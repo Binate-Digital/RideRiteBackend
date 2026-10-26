@@ -72,8 +72,12 @@ export async function recordTripEarning(trip) {
 // Ride late-cancel fees are platform revenue (Trip.cancelFeeRecipient = "platform"); the
 // `cancellation_fee` earning type remains only for entries credited before that change.
 
-/** Peer-to-peer rental paid → owner's share is owed to them (fleet rentals: platform revenue). */
-export async function recordRentalOwnerEarning(booking) {
+/**
+ * Peer-to-peer rental paid → the owner's share is recorded `held` (shown as upcoming, not
+ * payable). It becomes payable when the rental completes (releaseRentalOwnerEarning).
+ * Fleet rentals are platform revenue.
+ */
+export async function recordRentalOwnerEarning(booking, { status = "held" } = {}) {
   if (booking.source !== "peer") return null;
   const grossCents = booking.subtotalCents;
   return insertOnce({
@@ -84,7 +88,21 @@ export async function recordRentalOwnerEarning(booking) {
     commissionCents: booking.commissionCents,
     netCents: grossCents - booking.commissionCents,
     description: `Rental ${new Date(booking.startDate).toISOString().slice(0, 10)} → ${new Date(booking.endDate).toISOString().slice(0, 10)}`,
+    status,
+    earnedAt: status === "held" ? booking.paidAt || new Date() : booking.completedAt || new Date(),
   });
+}
+
+/** Rental completed → the owner's held share becomes payable (pending) with the next payout. */
+export async function releaseRentalOwnerEarning(booking) {
+  if (booking.source !== "peer") return null;
+  const released = await DriverEarning.findOneAndUpdate(
+    { rentalBookingId: booking._id, type: "rental", status: "held" },
+    { $set: { status: "pending", earnedAt: booking.completedAt || new Date() } },
+    { new: true },
+  );
+  // Paid before rentals had a lifecycle (already pending) or never recorded: make sure it exists
+  return released || recordRentalOwnerEarning(booking, { status: "pending" });
 }
 
 /**
@@ -101,12 +119,22 @@ export async function adjustRentalOwnerEarning(booking, retainedCents) {
     ? Math.round((grossCents * booking.commissionCents) / booking.subtotalCents)
     : 0;
   const netCents = grossCents - commissionCents;
-  if (entry.status === "pending") {
-    // Conditional on still pending: a payout run claiming it meanwhile takes the deduction path
+  if (entry.status === "pending" || entry.status === "held") {
+    // Conditional on still unpaid: a payout run claiming it meanwhile takes the deduction path
     const updated = await DriverEarning.findOneAndUpdate(
-      { _id: entry._id, status: "pending" },
+      { _id: entry._id, status: entry.status },
       grossCents > 0
-        ? { $set: { grossCents, commissionCents, netCents, description: `${entry.description} (cancelled — partial)` } }
+        ? {
+            // The booking is over: what the owner keeps of a cancelled rental is payable now
+            $set: {
+              grossCents,
+              commissionCents,
+              netCents,
+              status: "pending",
+              ...(entry.status === "held" ? { earnedAt: booking.cancelledAt || new Date() } : {}),
+              description: `${entry.description} (cancelled — partial)`,
+            },
+          }
         : { $set: { status: "void", description: `${entry.description} (cancelled)` } },
       { new: true },
     );
@@ -177,10 +205,16 @@ export async function driverEarningsSummary(driverId, now = new Date()) {
     commissionCents: 0,
     deductionsCents: 0,
     pendingPayoutCents: 0,
+    /** Rental shares waiting for the rental to complete (not payable yet, not in the totals) */
+    upcomingCents: 0,
     paidOutCents: 0,
     byType: Object.fromEntries(EARNING_TYPES.map((t) => [t, 0])),
   };
   for (const e of entries) {
+    if (e.status === "held") {
+      totals.upcomingCents += e.netCents;
+      continue;
+    }
     const at = new Date(e.earnedAt).getTime();
     totals.byType[e.type] = (totals.byType[e.type] || 0) + e.netCents;
     if (e.type === "deduction") {

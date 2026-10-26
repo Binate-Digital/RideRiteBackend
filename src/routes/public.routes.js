@@ -38,6 +38,9 @@ router.get("/trips/:id/track", trackLimiter, pub.trackTrip);
 router.get("/nearby-tiers", pub.nearbyTiers);
 router.get("/nearby-drivers", requireAuth, nearbyLimiter, pub.nearbyDrivers);
 
+// Fare floors, commission rates and listing-review threshold (from admin settings; cacheable)
+router.get("/pricing-summary", pub.pricingSummary);
+
 router.get("/reverse-geocode", geocodeLimiter, pub.reverseGeocodePoint);
 
 // Legal pages (admin-editable Markdown)

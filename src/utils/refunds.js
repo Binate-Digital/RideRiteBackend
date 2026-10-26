@@ -47,7 +47,15 @@ export async function refundPayment(payment, amountCents, { reason = "requested_
           reason: ["duplicate", "fraudulent", "requested_by_customer"].includes(reason)
             ? reason
             : "requested_by_customer",
-          metadata: { paymentId: fresh._id.toString(), note: reason },
+          metadata: {
+            app: "riderite",
+            paymentId: fresh._id.toString(),
+            purpose: fresh.purpose,
+            userId: String(fresh.userId),
+            ...(fresh.tripId ? { tripId: String(fresh.tripId) } : {}),
+            ...(fresh.refId ? { [fresh.purpose === "rental" ? "rentalBookingId" : fresh.purpose === "chauffeur" ? "chauffeurBookingId" : "refId"]: String(fresh.refId) } : {}),
+            note: String(reason).slice(0, 200),
+          },
         },
         // Same payment + same running total → Stripe returns the same refund on a retry
         { idempotencyKey: `refund_${fresh._id}_${fresh.refundedCents || 0}_${amount}` },

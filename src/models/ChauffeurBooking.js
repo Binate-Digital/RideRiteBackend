@@ -54,6 +54,30 @@ const chauffeurBookingSchema = new mongoose.Schema(
     refundPercent: { type: Number, default: null },
     /** Reminder keys already sent, e.g. { rider_1440: Date, driver_60: Date } */
     remindersSent: { type: Object, default: {} },
+    /**
+     * How the driver is found. auto: offered to every eligible driver, first to accept wins.
+     * direct: the rider picked `requestedDriverId`; only that driver is offered the booking
+     * until `directOfferExpiresAt` (then: declined / timed out → rider picks again, or auto
+     * when `autoFallback`).
+     */
+    assignmentMode: { type: String, enum: ["auto", "direct"], default: "auto" },
+    requestedDriverId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    directOfferExpiresAt: { type: Date, default: null, index: true },
+    autoFallback: { type: Boolean, default: false },
+    /** The picked driver declined / timed out and the rider hasn't chosen what to do yet */
+    needsDriverChoice: { type: Boolean, default: false },
+    /** Drivers who declined or let a direct request time out (not offered again) */
+    directDeclines: {
+      type: [
+        {
+          _id: false,
+          driverId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          reason: { type: String, enum: ["declined", "timeout"] },
+          at: { type: Date },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: true, minimize: false },
 );
@@ -91,6 +115,13 @@ chauffeurBookingSchema.methods.toSafeJSON = function toSafeJSON() {
     cancelReason: this.cancelReason,
     refundCents: this.refundCents,
     refundPercent: this.refundPercent,
+    assignmentMode: this.assignmentMode || "auto",
+    requestedDriverId: this.requestedDriverId ? this.requestedDriverId.toString() : null,
+    directOfferExpiresAt: this.directOfferExpiresAt,
+    autoFallback: Boolean(this.autoFallback),
+    needsDriverChoice: Boolean(this.needsDriverChoice),
+    /** Drivers who passed on it (the picker hides them) */
+    declinedDriverIds: (this.directDeclines || []).map((d) => String(d.driverId)),
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

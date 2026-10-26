@@ -142,6 +142,31 @@ export const env = {
   chauffeurCommissionRate: rate(process.env.CHAUFFEUR_COMMISSION_RATE, 0.2),
   /** How early (minutes before startAt) the assigned chauffeur may start the booking. */
   chauffeurStartEarlyMinutes: nonNeg(process.env.CHAUFFEUR_START_EARLY_MINUTES, 30),
+  /**
+   * Rider picked a specific chauffeur: that driver has this long (from payment) to accept,
+   * and never later than CHAUFFEUR_DIRECT_CUTOFF_MINUTES before the start.
+   */
+  chauffeurDirectAcceptMinutes: Math.max(1, Number(process.env.CHAUFFEUR_DIRECT_ACCEPT_MINUTES) || 60),
+  chauffeurDirectCutoffMinutes: nonNeg(process.env.CHAUFFEUR_DIRECT_CUTOFF_MINUTES, 30),
+  /** Default for "if my driver can't take it, offer it to other drivers" (riders can change it). */
+  chauffeurDirectAutoFallback: String(process.env.CHAUFFEUR_DIRECT_AUTO_FALLBACK || "").toLowerCase() === "true",
+
+  /** Rental lifecycle: confirmed/active rentals are completed automatically this long after the return date. */
+  rentalAutoCompleteHours: nonNeg(process.env.RENTAL_AUTO_COMPLETE_HOURS, 24),
+
+  /**
+   * Weekly automatic driver payouts (TRD 5.7). Off by default so a UAT stack never moves money
+   * on its own; when on, one run per ISO week at PAYOUT_SCHEDULE_DAY / PAYOUT_SCHEDULE_HOUR_UTC
+   * (a PayoutRun row makes it once even with several API instances). Drivers whose pending
+   * balance is below PAYOUT_MIN_CENTS roll over to the next week.
+   */
+  autoPayouts: {
+    enabled: String(process.env.AUTO_PAYOUTS_ENABLED || "").toLowerCase() === "true",
+    day: weekday(process.env.PAYOUT_SCHEDULE_DAY, 1),
+    hourUtc: Math.min(23, nonNeg(process.env.PAYOUT_SCHEDULE_HOUR_UTC, 14)),
+    minCents: nonNeg(process.env.PAYOUT_MIN_CENTS, 100),
+    sweepMinutes: Math.max(0.05, Number(process.env.PAYOUT_SWEEP_MINUTES) || 10),
+  },
 
   /** Booking reminders: minutes before start (rentals + chauffeur), and the sweep interval. */
   reminderLeadMinutes: list(process.env.BOOKING_REMINDER_LEADS_MINUTES || "1440,60")
@@ -238,6 +263,17 @@ function list(raw) {
 function nonNeg(raw, fallback) {
   const n = Number(raw);
   return raw !== "" && raw != null && Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** "monday" / "mon" / "1" → 0..6 (Sunday = 0); unset or invalid → fallback. */
+function weekday(raw, fallback) {
+  // (declared inside: env above is built before module-level consts would be initialized)
+  const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return fallback;
+  if (/^[0-6]$/.test(s)) return Number(s);
+  const i = WEEKDAYS.findIndex((d) => d === s || d.slice(0, 3) === s);
+  return i >= 0 ? i : fallback;
 }
 
 function testOnly(raw) {

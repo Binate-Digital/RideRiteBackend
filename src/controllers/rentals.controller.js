@@ -5,9 +5,14 @@ import { httpError } from "../middleware/errorHandler.js";
 import { env } from "../config/env.js";
 import { isStripeMock } from "../lib/stripe.js";
 import { createCheckoutIntent, retrieveIntentStatus } from "../utils/checkout.js";
+import { bookingDisplayStatus, rentalReceipt } from "../utils/receipts.js";
 import {
   bookedDaysForListing,
+  canHandOver,
+  canReturn,
   cancelPaidRental,
+  completeRental,
+  handOverRental,
   confirmRentalPaid,
   dayKey,
   declineRentalByOwner,
@@ -382,6 +387,13 @@ export const listOwnerBookings = asyncHandler(async (req, res) => {
         refundCents: b.refundCents,
         canDecline,
         declineDeadline: canDecline ? deadline : null,
+        // Lifecycle: owner records pickup and return (TRD 4.8)
+        canHandOver: canHandOver(b, now),
+        canReturn: canReturn(b, now),
+        handedOverAt: b.handedOverAt,
+        completedAt: b.completedAt,
+        completedBy: b.completedBy,
+        displayStatus: bookingDisplayStatus(b),
         createdAt: b.createdAt,
       };
     }),
@@ -399,6 +411,40 @@ export const declineBooking = asyncHandler(async (req, res) => {
     booking: done.toSafeJSON(),
     message: `Booking declined — the renter is refunded $${(done.refundCents / 100).toFixed(2)} in full.`,
   });
+});
+
+async function loadOwnerBooking(req) {
+  const booking = await RentalBooking.findById(req.params.id);
+  if (!booking) throw httpError(404, "Booking not found");
+  if (booking.source !== "peer" || String(booking.ownerId) !== String(req.user._id)) {
+    throw httpError(403, "Not your listing's booking");
+  }
+  return booking;
+}
+
+/** POST /api/rentals/bookings/:id/handover — owner: the renter picked the vehicle up (confirmed → active) */
+export const handOver = asyncHandler(async (req, res) => {
+  const done = await handOverRental(await loadOwnerBooking(req), { by: "owner" });
+  res.json({ ok: true, booking: done.toSafeJSON(), message: "Marked as picked up — the rental is active." });
+});
+
+/** POST /api/rentals/bookings/:id/return — owner: the vehicle is back (→ completed, earning payable) */
+export const markReturned = asyncHandler(async (req, res) => {
+  const done = await completeRental(await loadOwnerBooking(req), { by: "owner" });
+  res.json({
+    ok: true,
+    booking: done.toSafeJSON(),
+    message: `Rental completed — $${(ownerPayoutCents(done) / 100).toFixed(2)} is in your next payout.`,
+  });
+});
+
+/** GET /api/rentals/bookings/:id/receipt — renter's receipt (refunds included) */
+export const receipt = asyncHandler(async (req, res) => {
+  const booking = await RentalBooking.findById(req.params.id);
+  if (!booking) throw httpError(404, "Booking not found");
+  if (String(booking.renterId) !== String(req.user._id)) throw httpError(403, "Not your booking");
+  const listing = await RentalListing.findById(booking.listingId).select("title city state").lean();
+  res.json({ ok: true, receipt: await rentalReceipt(booking, listing) });
 });
 
 /** GET /api/rentals/quote?listingId=&startDate=&endDate= — exactly what a booking would charge */
@@ -582,6 +628,7 @@ export const listMyBookings = asyncHandler(async (req, res) => {
         listingPhoto: l?.photos?.[0] ?? null,
         vehicleType: l?.vehicleType ?? null,
         role,
+        displayStatus: bookingDisplayStatus(r),
         // What cancelling right now would refund (renter, paid, before pickup)
         cancelQuote: cancellable ? rentalCancelQuote(r, now) : null,
       };

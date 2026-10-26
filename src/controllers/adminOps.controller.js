@@ -31,6 +31,8 @@ import {
   usersById,
 } from "../utils/adminQuery.js";
 import { notifyUser } from "./notifications.controller.js";
+import { canHandOver, canReturn, completeRental, handOverRental } from "../utils/rentalBooking.js";
+import { bookingDisplayStatus } from "../utils/receipts.js";
 
 /**
  * Admin operations: trips & disputes (TRD 6.4), rentals (6.5), chauffeur bookings, bonuses &
@@ -530,10 +532,34 @@ export const listRentalBookings = asyncHandler(async (req, res) => {
         renter: brief(people, b.renterId),
         owner: b.source === "fleet" ? null : brief(people, b.ownerId),
         platformCents: b.source === "fleet" ? b.totalCents : b.commissionCents,
+        displayStatus: bookingDisplayStatus(b),
+        canHandOver: canHandOver(b),
+        canReturn: canReturn(b),
       })),
     ),
     totals: Object.fromEntries(totals.map((t) => [t._id, { totalCents: t.total, commissionCents: t.commission, refundCents: t.refunds }])),
   });
+});
+
+/**
+ * POST /api/admin/rentals/bookings/:id/handover | /return — admin records pickup / return
+ * (company fleet rentals always; P2P when the owner can't). Return completes the rental and
+ * makes the P2P owner's share payable.
+ */
+export const rentalHandover = asyncHandler(async (req, res) => {
+  const booking = await RentalBooking.findById(requireObjectId(req.params.id));
+  if (!booking) throw httpError(404, "Booking not found");
+  const done = await handOverRental(booking, { by: "admin" });
+  await audit(req, "rental.handover", "RentalBooking", done._id, { source: done.source });
+  res.json({ ok: true, booking: { ...done.toSafeJSON(), displayStatus: bookingDisplayStatus(done) } });
+});
+
+export const rentalReturn = asyncHandler(async (req, res) => {
+  const booking = await RentalBooking.findById(requireObjectId(req.params.id));
+  if (!booking) throw httpError(404, "Booking not found");
+  const done = await completeRental(booking, { by: "admin" });
+  await audit(req, "rental.return", "RentalBooking", done._id, { source: done.source });
+  res.json({ ok: true, booking: { ...done.toSafeJSON(), displayStatus: bookingDisplayStatus(done) } });
 });
 
 /** GET /api/admin/chauffeur?status=&from=&to=&q=&page= */

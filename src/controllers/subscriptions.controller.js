@@ -121,6 +121,7 @@ async function renewManual(req, res, current, plan) {
     payment_settings: { save_default_payment_method: "on_subscription", payment_method_types: ["card"] },
     // Never left running without a card: Stripe cancels it at trial end if setup was abandoned
     trial_settings: { end_behavior: { missing_payment_method: "cancel" } },
+    description: `RideRite driver membership (${plan.label}) — auto-renew`,
     expand: ["pending_setup_intent"],
     metadata: { userId: req.user._id.toString(), plan: plan.id, purpose: "subscription", app: "riderite", renews: "manual" },
   });
@@ -220,6 +221,7 @@ export const subscribe = asyncHandler(async (req, res) => {
     items: [{ price: await priceIdForPlan(plan.id) }],
     payment_behavior: "default_incomplete",
     payment_settings: { save_default_payment_method: "on_subscription", payment_method_types: ["card"] },
+    description: `RideRite driver membership (${plan.label})`,
     expand: ["latest_invoice.payment_intent"],
     metadata: { userId: req.user._id.toString(), plan: plan.id, purpose: "subscription", app: "riderite" },
   });

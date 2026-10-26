@@ -29,11 +29,16 @@ export async function ensureStripeCustomer(user) {
   if (user.stripeCustomerId) {
     return user.stripeCustomerId;
   }
-  const customer = await stripe.customers.create({
-    email: user.email,
-    name: user.fullName,
-    metadata: { userId: user._id.toString(), app: "riderite" },
-  });
+  const customer = await stripe.customers.create(
+    {
+      email: user.email,
+      name: user.fullName,
+      description: `RideRite ${user.role || "user"}`,
+      metadata: { userId: user._id.toString(), app: "riderite", role: String(user.role || "") },
+    },
+    // Two first payments in parallel must not create two customers
+    { idempotencyKey: `customer_${user._id}` },
+  );
   user.stripeCustomerId = customer.id;
   await user.save();
   return customer.id;

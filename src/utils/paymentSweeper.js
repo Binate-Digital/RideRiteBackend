@@ -7,6 +7,7 @@ import { broadcastTrip } from "../realtime/index.js";
 import { sweepBookingRefunds } from "./bookingRefunds.js";
 import { RentalBooking } from "../models/RentalBooking.js";
 import { ChauffeurBooking } from "../models/ChauffeurBooking.js";
+import { reconcilePendingIntents, reconcileSubscriptions } from "./stripeReconcile.js";
 
 let sweeper = null;
 
@@ -15,6 +16,7 @@ let sweeper = null;
  *  - release rental / chauffeur holds whose payment never completed (BOOKING_HOLD_SECONDS)
  *  - refund trips left `refund_pending` (Stripe error on cancel, or a no-drivers trip whose
  *    NO_DRIVERS_REFUND_DELAY_SECONDS re-request window has passed)
+ *  - reconcile with Stripe what a webhook would have told us (utils/stripeReconcile.js)
  */
 export async function sweepPayments(now = new Date()) {
   const released = (await sweepExpiredRentalHolds(now)) + (await sweepExpiredChauffeurHolds(now));
@@ -41,7 +43,9 @@ export async function sweepPayments(now = new Date()) {
   }
   // Cancelled rentals / chauffeur bookings whose refund hit a Stripe error
   refunded += (await sweepBookingRefunds(RentalBooking, "rental")) + (await sweepBookingRefunds(ChauffeurBooking, "chauffeur"));
-  return { released, refunded };
+  // Missed webhooks: pending card payments and lapsed-looking memberships re-read from Stripe
+  const reconciled = (await reconcilePendingIntents(now)) + (await reconcileSubscriptions(now));
+  return { released, refunded, reconciled };
 }
 
 export function startPaymentSweeper() {

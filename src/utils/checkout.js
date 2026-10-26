@@ -69,29 +69,44 @@ export async function createCheckoutIntent({ user, purpose, refId, amountCents, 
   }
 
   const customerId = await ensureStripeCustomer(user);
-  const intent = await stripe.paymentIntents.create({
-    amount: amountCents,
-    currency: "usd",
-    customer: customerId,
-    description,
-    automatic_payment_methods: { enabled: true, allow_redirects: "never" },
-    metadata: {
-      purpose,
-      refId: String(refId),
-      userId: user._id.toString(),
+  // One intent per (booking, attempt): a double-clicked "Pay" or a client retry gets the same
+  // intent back from Stripe instead of a second charge-able one
+  const attempt = await Payment.countDocuments({ purpose, refId, provider: "stripe" });
+  const intent = await stripe.paymentIntents.create(
+    {
+      amount: amountCents,
+      currency: "usd",
+      customer: customerId,
+      description,
+      receipt_email: user.email || undefined,
+      automatic_payment_methods: { enabled: true, allow_redirects: "never" },
+      metadata: {
+        app: "riderite",
+        purpose,
+        refId: String(refId),
+        [purpose === "rental" ? "rentalBookingId" : "chauffeurBookingId"]: String(refId),
+        userId: user._id.toString(),
+      },
     },
-  });
-  await Payment.create({
-    userId: user._id,
-    purpose,
-    refId,
-    amountCents,
-    status: "pending",
-    provider: "stripe",
-    stripePaymentIntentId: intent.id,
-    paymentMethodType: "card",
-    metadata: { description },
-  });
+    { idempotencyKey: `pi_${purpose}_${refId}_${attempt}` },
+  );
+  await Payment.findOneAndUpdate(
+    { stripePaymentIntentId: intent.id },
+    {
+      $setOnInsert: {
+        userId: user._id,
+        purpose,
+        refId,
+        amountCents,
+        status: "pending",
+        provider: "stripe",
+        stripePaymentIntentId: intent.id,
+        paymentMethodType: "card",
+        metadata: { description },
+      },
+    },
+    { upsert: true, new: true },
+  );
   return {
     mode: "stripe",
     clientSecret: intent.client_secret,
@@ -121,8 +136,12 @@ export async function recordIntentSucceeded({ purpose, refId, userId, paymentInt
   );
 }
 
-/** Best-effort: stop an unpaid intent from being paid after its booking's hold ended. */
-export async function cancelOpenIntent(paymentIntentId) {
+/**
+ * Stop an unpaid intent from being paid after its booking / ride was abandoned or its hold
+ * ended, and cancel it in Stripe so the dashboard shows it `canceled` (not left incomplete).
+ * `cancellation_reason`: abandoned (rider cancelled / hold expired) | failed_invoice etc.
+ */
+export async function cancelOpenIntent(paymentIntentId, { reason = "abandoned" } = {}) {
   if (!paymentIntentId) return;
   await Payment.updateMany(
     { stripePaymentIntentId: paymentIntentId, status: "pending" },
@@ -130,9 +149,12 @@ export async function cancelOpenIntent(paymentIntentId) {
   );
   if (isStripeMock() || paymentIntentId.startsWith("pi_mock_")) return;
   try {
-    await getStripe().paymentIntents.cancel(paymentIntentId);
-  } catch {
-    /* already succeeded / canceled — the confirm path handles a late success */
+    await getStripe().paymentIntents.cancel(paymentIntentId, { cancellation_reason: reason });
+  } catch (err) {
+    // Already succeeded / canceled — a late success is handled by the confirm path
+    if (err?.code !== "payment_intent_unexpected_state") {
+      console.warn(`[stripe] cancel ${paymentIntentId} failed: ${err.message}`);
+    }
   }
 }
 

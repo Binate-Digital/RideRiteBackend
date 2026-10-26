@@ -5,6 +5,7 @@ import * as admin from "../controllers/admin.controller.js";
 import * as ops from "../controllers/adminOps.controller.js";
 import * as finance from "../controllers/adminFinance.controller.js";
 import * as system from "../controllers/adminSystem.controller.js";
+import * as bookingChat from "../controllers/bookingChat.controller.js";
 
 /**
  * Admin API (TRD 6). Every route needs an admin account plus the permission(s) listed —
@@ -58,6 +59,11 @@ router.post("/rentals/fleet", can("rentals:manage"), ops.createFleetListing);
 router.patch("/rentals/fleet/:id", can("rentals:manage"), ops.updateFleetListing);
 router.delete("/rentals/fleet/:id", can("rentals:manage"), ops.deleteFleetListing);
 router.get("/rentals/bookings", can("rentals:read"), ops.listRentalBookings);
+router.post("/rentals/bookings/:id/handover", can("rentals:manage"), ops.rentalHandover);
+router.post("/rentals/bookings/:id/return", can("rentals:manage"), ops.rentalReturn);
+// Fleet rentals: RideRite support side of the renter chat
+router.get("/rentals/bookings/:id/messages", can("rentals:manage"), bookingChat.rentalMessages);
+router.post("/rentals/bookings/:id/messages", can("rentals:manage"), bookingChat.rentalSend);
 router.get("/chauffeur", can("chauffeur:read"), ops.listChauffeur);
 
 // Finance (6.6) and cancellations / refunds (6.8)

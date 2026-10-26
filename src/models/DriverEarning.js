@@ -9,7 +9,8 @@ import mongoose from "mongoose";
  *                   netCents = gross − commission.
  * cancellation_fee: legacy — a rider's late-cancel fee credited to the driver before those fees
  *                   became platform revenue. No new entries are created; old ones stay valid.
- * rental:           a peer-to-peer listing owner's share (subtotal − RENTAL_COMMISSION_RATE).
+ * rental:           a peer-to-peer listing owner's share (subtotal − RENTAL_COMMISSION_RATE),
+ *                   `held` from payment until the rental is completed, then payable.
  * chauffeur:        the assigned private driver's share of a completed chauffeur booking
  *                   (total − CHAUFFEUR_COMMISSION_RATE).
  * bonus:            an admin-approved monthly bonus (TRD 5.5), paid with the next payout.
@@ -34,10 +35,12 @@ const driverEarningSchema = new mongoose.Schema(
     /**
      * pending → processing (claimed by a payout run) → paid.
      * collected: already in the driver's hands (cash trip) — shown as earnings, never paid out.
+     * held: earned but not payable yet — a P2P rental's owner share until the rental is
+     *       completed (TRD 5.8); becomes `pending` on completion, `void` if cancelled.
      */
     status: {
       type: String,
-      enum: ["pending", "processing", "paid", "collected", "void"],
+      enum: ["held", "pending", "processing", "paid", "collected", "void"],
       default: "pending",
       index: true,
     },

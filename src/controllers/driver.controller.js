@@ -19,6 +19,7 @@ import { relayDriverLocation } from "../realtime/index.js";
 import { Trip } from "../models/Trip.js";
 import { declineOffer } from "../utils/dispatch.js";
 import { driverEarningsSummary } from "../utils/earnings.js";
+import { payoutScheduleInfo } from "../utils/payoutSchedule.js";
 import { DriverPayout } from "../models/DriverPayout.js";
 import { DriverEarning } from "../models/DriverEarning.js";
 import { driverCardsFor } from "../utils/tripDrivers.js";
@@ -319,9 +320,10 @@ export const ensureDriverRole = asyncHandler(async (req, res) => {
  * per-trip breakdown (fare, commission, net), bonuses, deductions and payout history.
  */
 export const getEarnings = asyncHandler(async (req, res) => {
-  const [{ totals, entries }, payouts] = await Promise.all([
+  const [{ totals, entries }, payouts, payoutSchedule] = await Promise.all([
     driverEarningsSummary(req.user._id),
     DriverPayout.find({ driverId: req.user._id }).sort({ createdAt: -1 }).limit(50),
+    payoutScheduleInfo(),
   ]);
   const tripIds = entries.filter((e) => e.tripId).map((e) => e.tripId);
   const trips = await Trip.find({ _id: { $in: tripIds } })
@@ -355,6 +357,8 @@ export const getEarnings = asyncHandler(async (req, res) => {
     adjustments: entries.filter((e) => e.type === "adjustment").map(row),
     deductions: entries.filter((e) => e.type === "deduction").map(row),
     payouts: payouts.map((p) => p.toSafeJSON()),
+    // Next automatic weekly payout (null when payouts are run by admin only)
+    payoutSchedule,
   });
 });
 

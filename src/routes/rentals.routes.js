@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { requireVerified } from "../middleware/requireVerified.js";
 import * as rentals from "../controllers/rentals.controller.js";
+import * as bookingChat from "../controllers/bookingChat.controller.js";
 
 const router = Router();
 
@@ -22,5 +23,13 @@ router.post("/bookings/:id/sync", rentals.syncPayment);
 router.post("/bookings/:id/cancel", rentals.cancelBooking);
 router.post("/bookings/:id/decline", rentals.declineBooking);
 router.get("/bookings/mine", rentals.listMyBookings);
+router.get("/bookings/:id/receipt", rentals.receipt);
+// Owner records pickup / return (TRD 4.8 lifecycle)
+router.post("/bookings/:id/handover", rentals.handOver);
+router.post("/bookings/:id/return", rentals.markReturned);
+// Masked chat / call: renter ↔ owner (fleet: renter ↔ RideRite support)
+router.get("/bookings/:id/messages", bookingChat.rentalMessages);
+router.post("/bookings/:id/messages", bookingChat.rentalSend);
+router.post("/bookings/:id/call", bookingChat.rentalCall);
 
 export default router;

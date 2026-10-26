@@ -13,8 +13,8 @@ import { DriverSubscription } from "../models/DriverSubscription.js";
  *  rideCommissionCents       platform commission on completed rides' base fare (earnings ledger)
  *  rideServiceFeeCents       rider service fee on completed rides (kept by the platform)
  *  rideDiscountCents         promo discounts on completed rides (platform-funded, subtracted)
- *  rentalCommissionCents     commission on paid peer-to-peer rentals (not cancelled)
- *  fleetRevenueCents         paid company-fleet rentals (100% platform, not cancelled)
+ *  rentalCommissionCents     commission on completed peer-to-peer rentals (TRD 5.8)
+ *  fleetRevenueCents         completed company-fleet rentals (100% platform)
  *  chauffeurCommissionCents  commission on completed chauffeur bookings (ledger)
  *  subscriptionRevenueCents  driver membership payments, net of their refunds
  *  bookingCancelRetainedCents  paid rental / chauffeur bookings cancelled late: paid − refunded
@@ -38,7 +38,6 @@ const sum = async (Model, match, expr) => {
   return row?.total ?? 0;
 };
 
-const LIVE_BOOKING = ["confirmed", "active", "completed"];
 const PAID_STATUSES = ["succeeded", "partially_refunded", "refunded"];
 
 export async function revenueSummary({ from = null, to = null } = {}) {
@@ -71,7 +70,8 @@ export async function revenueSummary({ from = null, to = null } = {}) {
     sum(DriverEarning, { type: "trip", status: { $ne: "void" }, ...range("earnedAt", from, to) }, "$commissionCents"),
     sum(DriverEarning, { type: "chauffeur", status: { $ne: "void" }, ...range("earnedAt", from, to) }, "$commissionCents"),
     RentalBooking.aggregate([
-      { $match: { paid: true, status: { $in: LIVE_BOOKING }, ...range("paidAt", from, to) } },
+      // Earned when the rental completes (owner share becomes payable at the same moment)
+      { $match: { paid: true, status: "completed", ...range("completedAt", from, to) } },
       {
         $group: {
           _id: "$source",

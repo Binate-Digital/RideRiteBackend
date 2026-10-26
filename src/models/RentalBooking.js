@@ -41,9 +41,22 @@ const rentalBookingSchema = new mongoose.Schema(
     refundPercent: { type: Number, default: null },
     /** Reminder keys already sent, e.g. { renter_1440: Date } (see utils/reminders.js) */
     remindersSent: { type: Object, default: {} },
+    /**
+     * Lifecycle (TRD 4.8 / 5.8): confirmed → active (vehicle handed over, on/after the start
+     * date) → completed (returned, or automatically RENTAL_AUTO_COMPLETE_HOURS after the end).
+     * The P2P owner's earning becomes payable only on completion.
+     */
+    handedOverAt: { type: Date, default: null },
+    handedOverBy: { type: String, enum: ["owner", "admin", null], default: null },
+    returnedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    completedBy: { type: String, enum: ["owner", "admin", "system", null], default: null },
   },
   { timestamps: true, minimize: false },
 );
+
+// Rental sweeper: confirmed / active rentals past their return date
+rentalBookingSchema.index({ status: 1, endDate: 1 });
 
 // Live admin dashboard counters (realtime/index.js)
 watchForAdmins(rentalBookingSchema, "rental");
@@ -72,6 +85,11 @@ rentalBookingSchema.methods.toSafeJSON = function toSafeJSON() {
     declineReason: this.declineReason,
     refundCents: this.refundCents,
     refundPercent: this.refundPercent,
+    handedOverAt: this.handedOverAt,
+    handedOverBy: this.handedOverBy,
+    returnedAt: this.returnedAt,
+    completedAt: this.completedAt,
+    completedBy: this.completedBy,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

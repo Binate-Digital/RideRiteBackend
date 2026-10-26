@@ -27,6 +27,7 @@ import {
 } from "../utils/dispatch.js";
 import { tripWithDriver, tripsWithDrivers } from "../utils/tripDrivers.js";
 import { settleTripRefund } from "../utils/refunds.js";
+import { cancelOpenIntent } from "../utils/checkout.js";
 import { recordTripEarning } from "../utils/earnings.js";
 import { rideReceiptEmail } from "../utils/mailer.js";
 import { User } from "../models/User.js";
@@ -299,6 +300,9 @@ export const cancel = asyncHandler(async (req, res) => {
   if (refundCents > 0) {
     const settled = await settleTripRefund(cancelled, { reason: "rider cancelled" });
     if (settled?.trip) finalTrip = settled.trip;
+  } else if (!trip.paid && trip.stripePaymentIntentId) {
+    // Card ride cancelled before it was paid: cancel the intent so Stripe shows it canceled
+    await cancelOpenIntent(trip.stripePaymentIntentId);
   }
   // The late-cancel fee is platform revenue (utils/revenue.js) — no driver earning entry
   stopDispatch(trip._id);

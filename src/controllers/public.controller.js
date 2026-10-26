@@ -7,6 +7,8 @@ import { findNearbyOnlineDrivers, etaMinutesForMiles } from "../utils/nearbyDriv
 import { driverCardsFor } from "../utils/tripDrivers.js";
 import { checkShareToken, pinId, snapToGrid, TRIP_ENDED } from "../utils/locationPrivacy.js";
 import { isObjectId } from "../utils/adminQuery.js";
+import { getSettings, currentPricing } from "../utils/settings.js";
+import { computeFare } from "../utils/fares.js";
 
 const TRACK_FIELDS =
   "status pickupAddress destinationAddress vehicleType fareCents requestedAt acceptedAt enRouteAt arrivedAt startedAt completedAt cancelledAt updatedAt riderId driverId pickupCoords destinationCoords";
@@ -167,4 +169,40 @@ export const reverseGeocodePoint = asyncHandler(async (req, res) => {
   }
   const { reverseGeocode } = await import("../utils/geocode.js");
   res.json({ ok: true, address: await reverseGeocode(lat, lng) });
+});
+
+/**
+ * GET /api/public/pricing-summary — public numbers the marketing pages and driver UI quote
+ * (no auth, nothing secret). Every value comes from the live admin settings / env, and the
+ * per-tier "from" price is the real fare for the shortest possible trip (minimum fare + booking
+ * fee + service fee + tax), computed with the same computeFare the booking flow charges.
+ */
+export const pricingSummary = asyncHandler(async (_req, res) => {
+  const settings = getSettings();
+  const pricing = currentPricing();
+  const tiers = Object.entries(pricing.rates).map(([vehicleType, r]) => ({
+    vehicleType,
+    label: r.label,
+    fromCents: computeFare(vehicleType, 0, 0, pricing).totalCents,
+  }));
+  res.set("Cache-Control", "public, max-age=300");
+  res.json({
+    ok: true,
+    currency: "usd",
+    rides: {
+      tiers,
+      fromCents: Math.min(...tiers.map((t) => t.fromCents)),
+      minimumFareCents: pricing.minimumFareCents,
+      bookingFeeCents: pricing.bookingFeeCents,
+      serviceFeeRate: pricing.serviceFeeRate,
+      taxRate: pricing.taxRate,
+    },
+    commission: {
+      rideRate: settings.commission.platformRate,
+      rentalRate: settings.commission.rentalRate,
+      chauffeurRate: settings.commission.chauffeurRate,
+    },
+    rentalPriceReviewPercent: env.rentalPriceReviewPercent,
+    chauffeurHourlyCents: { ...settings.chauffeurHourlyCents },
+  });
 });

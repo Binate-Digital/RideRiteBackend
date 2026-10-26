@@ -3,6 +3,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { httpError } from "../middleware/errorHandler.js";
 import { env } from "../config/env.js";
 import { isStripeMock } from "../lib/stripe.js";
+import { chauffeurReceipt } from "../utils/receipts.js";
 import { createCheckoutIntent, retrieveIntentStatus } from "../utils/checkout.js";
 import {
   chauffeurOptions,
@@ -13,7 +14,13 @@ import {
 } from "../utils/chauffeurBooking.js";
 import {
   acceptChauffeurBooking,
+  assertPickable,
+  availableChauffeurDrivers,
   cancelPaidChauffeur,
+  chooseChauffeurDriver,
+  claimDriverSlots,
+  declineChauffeurRequest,
+  releaseDriverSlots,
   chauffeurBookingsForDriver,
   chauffeurBookingsForRider,
   completeChauffeurBooking,
@@ -32,7 +39,30 @@ export const options = asyncHandler(async (_req, res) => {
       fullRefundHours: env.chauffeurFullRefundHours,
       lateRefundPercent: env.chauffeurLateRefundPercent,
     },
+    driverChoice: {
+      acceptMinutes: env.chauffeurDirectAcceptMinutes,
+      cutoffMinutes: env.chauffeurDirectCutoffMinutes,
+      autoFallbackDefault: env.chauffeurDirectAutoFallback,
+    },
   });
+});
+
+/**
+ * GET /api/chauffeur/available-drivers?tier=&startAt=&durationHours= — drivers the rider can
+ * pick for that vehicle type and time window (public cards: first name, photo, vehicle without
+ * plate, rating, completed chauffeur jobs; never phone or location).
+ */
+export const availableDrivers = asyncHandler(async (req, res) => {
+  const q = quoteChauffeur({ tier: req.query.tier, vehicleType: req.query.vehicleType, durationHours: req.query.durationHours });
+  const startAt = new Date(String(req.query.startAt || ""));
+  if (Number.isNaN(startAt.getTime())) throw httpError(400, "startAt is required");
+  const drivers = await availableChauffeurDrivers({
+    vehicleType: q.vehicleType,
+    startAt,
+    durationHours: q.durationHours,
+    excludeIds: [req.user._id],
+  });
+  res.json({ ok: true, vehicleType: q.vehicleType, startAt, durationHours: q.durationHours, drivers });
 });
 
 /** POST /api/chauffeur/estimate — body: { tier?, vehicleType?, durationHours } */
@@ -41,8 +71,11 @@ export const estimate = asyncHandler(async (req, res) => {
 });
 
 /**
- * POST /api/chauffeur/bookings — body: { tier, durationHours, startAt, pickupAddress, pickupCoords?, notes? }
+ * POST /api/chauffeur/bookings — body: { tier, durationHours, startAt, pickupAddress, pickupCoords?, notes?,
+ *   driverId?, autoFallback? }
  * Created as `pending_payment` with a PaymentIntent; confirmed only after payment succeeds.
+ * With `driverId` (from /available-drivers) that driver's time is held right away and only they
+ * are offered the booking once it's paid; without it RideRite offers it to every eligible driver.
  */
 export const book = asyncHandler(async (req, res) => {
   const pickupAddress = String(req.body?.pickupAddress || "").trim();
@@ -70,8 +103,21 @@ export const book = asyncHandler(async (req, res) => {
     paid: false,
     paymentStatus: "pending",
     holdExpiresAt: new Date(Date.now() + env.bookingHoldSeconds * 1000),
+    autoFallback:
+      typeof req.body?.autoFallback === "boolean" ? req.body.autoFallback : env.chauffeurDirectAutoFallback,
   });
+  const pickedDriverId = req.body?.driverId ? String(req.body.driverId) : null;
   try {
+    if (pickedDriverId) {
+      await assertPickable(row, pickedDriverId);
+      // Atomic: two riders picking the same driver for overlapping times -> only one gets them
+      if (!(await claimDriverSlots(pickedDriverId, row))) {
+        throw httpError(409, "That driver was just booked for this time — pick another one", { code: "DRIVER_UNAVAILABLE" });
+      }
+      row.assignmentMode = "direct";
+      row.requestedDriverId = pickedDriverId;
+      await row.save();
+    }
     const payment = await createCheckoutIntent({
       user: req.user,
       purpose: "chauffeur",
@@ -83,9 +129,26 @@ export const book = asyncHandler(async (req, res) => {
     await row.save();
     res.status(201).json({ ok: true, booking: row.toSafeJSON(), payment });
   } catch (err) {
+    await releaseDriverSlots(row._id);
     await ChauffeurBooking.deleteOne({ _id: row._id });
     throw err;
   }
+});
+
+/**
+ * POST /api/chauffeur/bookings/:id/choose-driver — body: { driverId } | { auto: true }, optional
+ * autoFallback. For a paid booking without a driver (e.g. the picked driver declined).
+ */
+export const chooseDriver = asyncHandler(async (req, res) => {
+  const booking = await loadRiderBooking(req);
+  const auto = req.body?.auto === true;
+  const updated = await chooseChauffeurDriver(booking, {
+    auto,
+    driverId: auto ? null : req.body?.driverId,
+    autoFallback: typeof req.body?.autoFallback === "boolean" ? req.body.autoFallback : undefined,
+  });
+  const [json] = await chauffeurBookingsForRider([updated]);
+  res.json({ ok: true, booking: json });
 });
 
 async function loadRiderBooking(req) {
@@ -189,6 +252,12 @@ export const listMine = asyncHandler(async (req, res) => {
   });
 });
 
+/** GET /api/chauffeur/bookings/:id/receipt — rider's receipt (refunds included) */
+export const receipt = asyncHandler(async (req, res) => {
+  const booking = await loadRiderBooking(req);
+  res.json({ ok: true, receipt: await chauffeurReceipt(booking) });
+});
+
 // ---------- Driver side: scheduled bookings ----------
 
 /** GET /api/chauffeur/driver/open — bookings this driver can accept (eligibility + vehicle type) */
@@ -200,6 +269,8 @@ export const driverOpen = asyncHandler(async (req, res) => {
     reason: result.reason,
     vehicleType: result.vehicleType ?? result.profile?.vehicleType ?? null,
     bookings: await chauffeurBookingsForDriver(result.bookings),
+    // Riders who picked this driver specifically (accept or decline before it expires)
+    requests: await chauffeurBookingsForDriver(result.requests || []),
   });
 });
 
@@ -217,9 +288,16 @@ export const driverMine = asyncHandler(async (req, res) => {
   res.json({ ok: true, bookings: await chauffeurBookingsForDriver(rows) });
 });
 
-/** POST /api/chauffeur/bookings/:id/accept — first eligible driver wins */
+/** POST /api/chauffeur/bookings/:id/accept — the picked driver, or (auto) the first eligible driver */
 export const driverAccept = asyncHandler(async (req, res) => {
   const booking = await acceptChauffeurBooking(req.params.id, req.user._id);
+  const [json] = await chauffeurBookingsForDriver([booking]);
+  res.json({ ok: true, booking: json });
+});
+
+/** POST /api/chauffeur/bookings/:id/decline — the picked driver passes on a request */
+export const driverDecline = asyncHandler(async (req, res) => {
+  const booking = await declineChauffeurRequest(req.params.id, req.user._id);
   const [json] = await chauffeurBookingsForDriver([booking]);
   res.json({ ok: true, booking: json });
 });
