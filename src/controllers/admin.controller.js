@@ -660,7 +660,7 @@ export const gdprDelete = asyncHandler(async (req, res) => {
         suspension: { status: "deleted", reason, at: now, by: req.user._id },
         "notificationPrefs.promo": false,
       },
-      $unset: { email: "", phoneE164: "", googleId: "", appleId: "" },
+      $unset: { email: "", phoneE164: "", firebaseUid: "", googleId: "", appleId: "" },
     },
   );
   await DriverProfile.updateOne(

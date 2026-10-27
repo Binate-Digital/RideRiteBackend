@@ -26,8 +26,12 @@ const userSchema = new mongoose.Schema(
     /** Normalized US number (+1XXXXXXXXXX) — set once the number is verified by SMS OTP. */
     phoneE164: { type: String, default: undefined },
     isPhoneVerified: { type: Boolean, default: false },
-    /** Google sign-in subject (`sub`) */
+    /** Firebase Authentication uid (Google / Apple sign-in) */
+    firebaseUid: { type: String, default: undefined, select: false },
+    /** Google account id (`sub`) — also set by the earlier Google Identity Services sign-in */
     googleId: { type: String, default: undefined, select: false },
+    /** Apple ID user identifier (`sub`) */
+    appleId: { type: String, default: undefined, select: false },
     avatarUrl: { type: String, default: null },
     profileCompleted: { type: Boolean, default: false },
     // Social-only accounts have no password until they set one (reset flow)
@@ -104,7 +108,9 @@ const userSchema = new mongoose.Schema(
 const presentString = (field) => ({ partialFilterExpression: { [field]: { $type: "string" } } });
 userSchema.index({ email: 1 }, { unique: true, ...presentString("email") });
 userSchema.index({ phoneE164: 1 }, { unique: true, ...presentString("phoneE164") });
+userSchema.index({ firebaseUid: 1 }, { unique: true, ...presentString("firebaseUid") });
 userSchema.index({ googleId: 1 }, { unique: true, ...presentString("googleId") });
+userSchema.index({ appleId: 1 }, { unique: true, ...presentString("appleId") });
 
 /** Email or verified phone — either one activates the account. */
 userSchema.methods.isVerified = function isVerified() {

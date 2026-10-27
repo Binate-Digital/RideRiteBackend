@@ -30,7 +30,8 @@ router.post("/forgot-password", sensitiveLimiter, auth.forgotPassword);
 router.post("/reset-password", sensitiveLimiter, auth.resetPassword);
 router.post("/refresh", authLimiter, auth.refresh);
 router.get("/providers", auth.providers);
-router.post("/social/:provider", authLimiter, auth.socialLogin);
+// Google / Apple via Firebase Authentication (the only social sign-in path)
+router.post("/social/firebase", authLimiter, auth.socialLogin);
 // Per-IP limit here; per-number send limits live in utils/sms.js
 router.post("/phone/start", sensitiveLimiter, auth.phoneStart);
 router.post("/phone/signup", sensitiveLimiter, auth.phoneSignup);

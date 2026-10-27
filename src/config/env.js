@@ -108,10 +108,13 @@ export const env = {
     secure: String(process.env.SMTP_SECURE || "").toLowerCase() === "true",
   },
 
-  /** Google sign-in (the only social provider). Unset → the endpoint answers "not configured". */
-  googleClientIds: list(process.env.GOOGLE_CLIENT_ID),
+  /**
+   * Google + Apple sign-in through Firebase Authentication: the web app proves the identity with
+   * Firebase and sends its ID token, verified here. Unset → the endpoint answers "not configured".
+   */
+  firebaseProjectId: String(process.env.FIREBASE_PROJECT_ID || "").trim(),
   /** Test-only override (NODE_ENV=test) so smoke tests can sign tokens with their own keys. */
-  googleCertsUrl: testOnly(process.env.GOOGLE_CERTS_URL),
+  firebaseJwksUrl: testOnly(process.env.FIREBASE_JWKS_URL),
 
   /** Twilio (Verify for SMS OTP; Voice for masked calls). Unset → dev fallbacks. */
   twilio: {

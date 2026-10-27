@@ -21,7 +21,7 @@ import {
 } from "../validators/auth.schemas.js";
 import { e164ToDisplay, toE164 } from "../utils/phone.js";
 import { checkOtp, sendOtp, smsProvider } from "../utils/sms.js";
-import { socialProviders, verifyGoogleIdToken } from "../utils/socialAuth.js";
+import { socialProviders, verifyFirebaseIdToken } from "../utils/socialAuth.js";
 import { termsConsentFields } from "../utils/legal.js";
 import {
   createOpaqueToken,
@@ -421,47 +421,53 @@ async function createAccount(fields, role) {
   return user;
 }
 
+const PROVIDER_LABEL = { google: "Google", apple: "Apple" };
+
 /**
- * POST /api/auth/social/google — body: { idToken, fullName?, role?, acceptTerms? }
- * Verifies the Google ID token, then signs in the linked account; otherwise links an existing
- * account with the same *verified* email, otherwise creates one (email verified) — creating
- * needs acceptTerms: true (else 409 TERMS_REQUIRED, so the client can ask and retry).
+ * POST /api/auth/social/firebase — body: { idToken, fullName?, role?, acceptTerms? }
+ * Google / Apple sign-in. The web app signs in with Firebase Authentication and sends its ID
+ * token; we verify it, then sign in the account matched by Firebase uid or by the provider's
+ * own id (accounts from the earlier Google sign-in match here); otherwise link an existing
+ * account with the same *verified* email (Apple private-relay addresses are verified too),
+ * otherwise create one — creating needs acceptTerms: true (else 409 TERMS_REQUIRED, so the
+ * client can ask and retry). Our own JWT session is issued as for any sign-in.
  */
 export const socialLogin = asyncHandler(async (req, res) => {
-  const provider = String(req.params.provider || "").toLowerCase();
-  if (provider !== "google") throw httpError(404, "Unknown social provider");
   const data = socialLoginSchema.parse(req.body || {});
-  const identity = await verifyGoogleIdToken(data.idToken);
-  const idField = "googleId";
-  const select = "+refreshTokens +googleId";
+  const identity = await verifyFirebaseIdToken(data.idToken);
+  const label = PROVIDER_LABEL[identity.provider];
+  const idField = identity.provider === "apple" ? "appleId" : "googleId";
+  const select = "+refreshTokens +firebaseUid +googleId +appleId";
 
-  let user = await User.findOne({ [idField]: identity.subject }).select(select);
-  let created = false;
+  let user = await User.findOne({ firebaseUid: identity.firebaseUid }).select(select);
+  if (!user && identity.providerUid) {
+    user = await User.findOne({ [idField]: identity.providerUid }).select(select);
+  }
   if (!user && identity.email && identity.emailVerified) {
     user = await User.findOne({ email: identity.email }).select(select);
-    if (user) {
-      user[idField] = identity.subject;
-      // The provider vouched for this address
-      user.isEmailVerified = true;
-    }
+    // The provider vouched for this address
+    if (user) user.isEmailVerified = true;
   }
+
+  let created = false;
   if (!user) {
-    if (!identity.email) throw httpError(400, "Your Google account has no email address");
-    // Only a Google-verified address may link; an unverified one can't take over (or clash with) an account
+    if (!identity.email) throw httpError(400, `Your ${label} account did not share an email address`);
+    // Only a provider-verified address may link; an unverified one can't take over (or clash with) an account
     if (await User.exists({ email: identity.email })) {
       throw httpError(409, "An account with this email already exists — sign in with your password", { code: "EMAIL_TAKEN" });
     }
     if (data.acceptTerms !== true) {
       throw httpError(409, "Agree to the Terms and Privacy Policy to create your account", { code: "TERMS_REQUIRED" });
     }
-    const name = (data.fullName || identity.name || identity.email?.split("@")[0] || "").trim().slice(0, 80);
+    // Apple shares the name only on the very first sign-in (the client passes it along)
+    const name = (data.fullName || identity.name || "").trim().slice(0, 80);
     const created_ = await createAccount(
       {
         ...(await termsConsentFields()),
-        fullName: name.length >= 2 ? name : "RideRite rider",
-        ...(identity.email ? { email: identity.email } : {}),
-        isEmailVerified: Boolean(identity.email && identity.emailVerified),
-        [idField]: identity.subject,
+        fullName: name.length >= 2 ? name : "Rider",
+        email: identity.email,
+        isEmailVerified: identity.emailVerified,
+        ...(identity.picture ? { avatarUrl: identity.picture } : {}),
       },
       data.role,
     );
@@ -469,14 +475,24 @@ export const socialLogin = asyncHandler(async (req, res) => {
     created = true;
   }
   if (!user.isActive) throw httpError(403, "Account is suspended");
-  // Google vouches for the account (a linked or new email is verified)
-  if (!user.isVerified()) user.isEmailVerified = true;
+
+  // Remember both ids so the next sign-in matches directly (never steal one another account holds)
+  if (user.firebaseUid !== identity.firebaseUid && !(await User.exists({ firebaseUid: identity.firebaseUid, _id: { $ne: user._id } }))) {
+    user.firebaseUid = identity.firebaseUid;
+  }
+  if (identity.providerUid && !user[idField] && !(await User.exists({ [idField]: identity.providerUid }))) {
+    user[idField] = identity.providerUid;
+  }
+  // Keep the existing name; only replace the placeholder once the provider shares a real one
+  const sharedName = (data.fullName || identity.name || "").trim().slice(0, 80);
+  if (!created && user.fullName === "Rider" && sharedName.length >= 2) user.fullName = sharedName;
 
   const tokens = await issueSession(user, req);
   res.status(created ? 201 : 200).json({
     ok: true,
     message: created ? "Account created" : "Logged in",
     created,
+    provider: identity.provider,
     user: user.toSafeJSON(),
     ...tokens,
   });
